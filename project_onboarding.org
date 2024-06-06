@@ -1,9 +1,9 @@
-#+title: Collab Onboarding
+#+title: Project onboarding and resources
 #+bibliography: mac_bibliography.bib
-Document on how to get use to the tech stack and the Moby server.
+General resources and how-to's for logistics and our technologies.
 * Server (moby)
 ** Install and setup tailscale
-Download and install [[https://tailscale.com/][tailcale]]. This will give you direct access to the server.
+Download and install [[https://tailscale.com/][tailscale]]. This will give you direct access to the server.
 
 *** Macos installation from download
 #+begin_src shell
