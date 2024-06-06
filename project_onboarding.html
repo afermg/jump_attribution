@@ -3,7 +3,7 @@
 "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
 <html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en">
 <head>
-<!-- 2024-06-06 Thu 17:54 -->
+<!-- 2024-06-06 Thu 18:45 -->
 <meta http-equiv="Content-Type" content="text/html;charset=utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Project onboarding and resources</title>
@@ -201,59 +201,60 @@
 <h2>Table of Contents</h2>
 <div id="text-table-of-contents" role="doc-toc">
 <ul>
-<li><a href="#org272bb26">1. Server (moby)</a>
+<li><a href="#org4055bd9">1. Server (moby)</a>
 <ul>
-<li><a href="#org5d93c9a">1.1. Install and setup tailscale</a>
+<li><a href="#org62712a7">1.1. Install and setup tailscale</a>
 <ul>
-<li><a href="#org370baab">1.1.1. Macos installation from download</a></li>
-<li><a href="#orgbb0dc1a">1.1.2. Installed using brew/apt/&#x2026;</a></li>
+<li><a href="#org60b1c29">1.1.1. Macos installation from download</a></li>
+<li><a href="#org0080953">1.1.2. Installed using brew/apt/&#x2026;</a></li>
 </ul>
 </li>
-<li><a href="#org59c7fe8">1.2. Select packages</a></li>
-<li><a href="#org7dcddd6">1.3. Add user to Nix Home manager</a></li>
-<li><a href="#org4ad616c">1.4. Day-to-day access</a>
+<li><a href="#orgc52ef5c">1.2. Select packages</a></li>
+<li><a href="#org2068698">1.3. Add user to Nix Home manager</a></li>
+<li><a href="#orga3b346a">1.4. Day-to-day access</a>
 <ul>
-<li><a href="#org926682e">1.4.1. Jupyter notebook</a></li>
-<li><a href="#org04648eb">1.4.2. Step 1: Open Jupyter notebook on Moby</a></li>
-<li><a href="#org352e5cb">1.4.3. Step 2: Tunnel the port to your local computer</a></li>
-<li><a href="#org48ae4e1">1.4.4. VS Code</a></li>
-<li><a href="#org2f1b2f5">1.4.5. Emacs</a></li>
-</ul>
-</li>
-</ul>
-</li>
-<li><a href="#org7fc5988">2. Papers</a>
-<ul>
-<li><a href="#orgbb2fe85">2.1. Morphological profiling</a></li>
-<li><a href="#orgd27045f">2.2. Statistics</a></li>
-<li><a href="#org2a0eb69">2.3. Intepretable Deep Learning</a>
-<ul>
-<li><a href="#org589f1f3">2.3.1. Counterfactuals</a></li>
-<li><a href="#org4d6f14b">2.3.2. Generative modelling</a></li>
+<li><a href="#orgafc5319">1.4.1. Jupyter notebook</a></li>
+<li><a href="#org279c77b">1.4.2. Step 1: Open Jupyter notebook on Moby</a></li>
+<li><a href="#org3ec054c">1.4.3. Step 2: Tunnel the port to your local computer</a></li>
+<li><a href="#org72725f1">1.4.4. VS Code</a></li>
+<li><a href="#org574ded5">1.4.5. Emacs</a></li>
 </ul>
 </li>
 </ul>
 </li>
-<li><a href="#org53c7082">3. Selected important events</a></li>
+<li><a href="#org8db9bbc">2. Papers</a>
+<ul>
+<li><a href="#org1b1799e">2.1. Morphological profiling</a></li>
+<li><a href="#org29b67c9">2.2. Statistics</a></li>
+<li><a href="#orgcdfb053">2.3. Intepretable Deep Learning</a>
+<ul>
+<li><a href="#org74a9278">2.3.1. Counterfactuals</a></li>
+<li><a href="#orgdf0e347">2.3.2. Generative modelling</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li><a href="#orgc21c7cd">3. Selected important events</a></li>
+<li><a href="#orgd35cd75">4. Bibliography</a></li>
 </ul>
 </div>
 </div>
 <p>
 General resources and how-to&rsquo;s for logistics and our technologies.
 </p>
-<div id="outline-container-org272bb26" class="outline-2">
-<h2 id="org272bb26"><span class="section-number-2">1.</span> Server (moby)</h2>
+<div id="outline-container-org4055bd9" class="outline-2">
+<h2 id="org4055bd9"><span class="section-number-2">1.</span> Server (moby)</h2>
 <div class="outline-text-2" id="text-1">
 </div>
-<div id="outline-container-org5d93c9a" class="outline-3">
-<h3 id="org5d93c9a"><span class="section-number-3">1.1.</span> Install and setup tailscale</h3>
+<div id="outline-container-org62712a7" class="outline-3">
+<h3 id="org62712a7"><span class="section-number-3">1.1.</span> Install and setup tailscale</h3>
 <div class="outline-text-3" id="text-1-1">
 <p>
 Download and install <a href="https://tailscale.com/">tailscale</a>. This will give you direct access to the server.
 </p>
 </div>
-<div id="outline-container-org370baab" class="outline-4">
-<h4 id="org370baab"><span class="section-number-4">1.1.1.</span> Macos installation from download</h4>
+<div id="outline-container-org60b1c29" class="outline-4">
+<h4 id="org60b1c29"><span class="section-number-4">1.1.1.</span> Macos installation from download</h4>
 <div class="outline-text-4" id="text-1-1-1">
 <div class="org-src-container">
 <pre class="src src-shell">/Applications/Tailscale.app/Contents/MacOS/Tailscale up --authkey tskey-abcdef1432341818
@@ -264,8 +265,8 @@ You will receive a machine key that you can use to enter the network.
 </p>
 </div>
 </div>
-<div id="outline-container-orgbb0dc1a" class="outline-4">
-<h4 id="orgbb0dc1a"><span class="section-number-4">1.1.2.</span> Installed using brew/apt/&#x2026;</h4>
+<div id="outline-container-org0080953" class="outline-4">
+<h4 id="org0080953"><span class="section-number-4">1.1.2.</span> Installed using brew/apt/&#x2026;</h4>
 <div class="outline-text-4" id="text-1-1-2">
 <div class="org-src-container">
 <pre class="src src-shell">tailscale up --authkey tskey-abcdef1432341818
@@ -274,8 +275,8 @@ You will receive a machine key that you can use to enter the network.
 </div>
 </div>
 </div>
-<div id="outline-container-org59c7fe8" class="outline-3">
-<h3 id="org59c7fe8"><span class="section-number-3">1.2.</span> Select packages</h3>
+<div id="outline-container-orgc52ef5c" class="outline-3">
+<h3 id="orgc52ef5c"><span class="section-number-3">1.2.</span> Select packages</h3>
 <div class="outline-text-3" id="text-1-2">
 <ul class="org-ul">
 <li>Clone my <a href="https://github.com/afermg/clouds/">clouds</a> repository.</li>
@@ -290,8 +291,8 @@ You will receive a machine key that you can use to enter the network.
 </ul>
 </div>
 </div>
-<div id="outline-container-org7dcddd6" class="outline-3">
-<h3 id="org7dcddd6"><span class="section-number-3">1.3.</span> Add user to Nix Home manager</h3>
+<div id="outline-container-org2068698" class="outline-3">
+<h3 id="org2068698"><span class="section-number-3">1.3.</span> Add user to Nix Home manager</h3>
 <div class="outline-text-3" id="text-1-3">
 <p>
 This section ensures that the home manager system finds your files and generates your user.
@@ -304,23 +305,23 @@ This section ensures that the home manager system finds your files and generates
 </ul>
 </div>
 </div>
-<div id="outline-container-org4ad616c" class="outline-3">
-<h3 id="org4ad616c"><span class="section-number-3">1.4.</span> Day-to-day access</h3>
+<div id="outline-container-orga3b346a" class="outline-3">
+<h3 id="orga3b346a"><span class="section-number-3">1.4.</span> Day-to-day access</h3>
 <div class="outline-text-3" id="text-1-4">
 <p>
 You can access it in multiple ways.
 </p>
 </div>
-<div id="outline-container-org926682e" class="outline-4">
-<h4 id="org926682e"><span class="section-number-4">1.4.1.</span> Jupyter notebook</h4>
+<div id="outline-container-orgafc5319" class="outline-4">
+<h4 id="orgafc5319"><span class="section-number-4">1.4.1.</span> Jupyter notebook</h4>
 <div class="outline-text-4" id="text-1-4-1">
 <p>
 This method requires <code>screen</code> both in remote and local computers.
 </p>
 </div>
 </div>
-<div id="outline-container-org04648eb" class="outline-4">
-<h4 id="org04648eb"><span class="section-number-4">1.4.2.</span> Step 1: Open Jupyter notebook on Moby</h4>
+<div id="outline-container-org279c77b" class="outline-4">
+<h4 id="org279c77b"><span class="section-number-4">1.4.2.</span> Step 1: Open Jupyter notebook on Moby</h4>
 <div class="outline-text-4" id="text-1-4-2">
 <div class="org-src-container">
 <pre class="src src-shell">ssh $<span style="color: #00d3d0;">USER</span>@moby
@@ -335,8 +336,8 @@ poetry run jupyter notebook
 </div>
 </div>
 </div>
-<div id="outline-container-org352e5cb" class="outline-4">
-<h4 id="org352e5cb"><span class="section-number-4">1.4.3.</span> Step 2: Tunnel the port to your local computer</h4>
+<div id="outline-container-org3ec054c" class="outline-4">
+<h4 id="org3ec054c"><span class="section-number-4">1.4.3.</span> Step 2: Tunnel the port to your local computer</h4>
 <div class="outline-text-4" id="text-1-4-3">
 <p>
 Then open a tunnel to your jupyter notebook instance from the local computer.
@@ -356,8 +357,8 @@ If your local computer is restarted you need to repeat step 2.
 </p>
 </div>
 </div>
-<div id="outline-container-org48ae4e1" class="outline-4">
-<h4 id="org48ae4e1"><span class="section-number-4">1.4.4.</span> VS Code</h4>
+<div id="outline-container-org72725f1" class="outline-4">
+<h4 id="org72725f1"><span class="section-number-4">1.4.4.</span> VS Code</h4>
 <div class="outline-text-4" id="text-1-4-4">
 <p>
 Tested on versions before 1.88.
@@ -369,8 +370,8 @@ Tested on versions before 1.88.
 </ol>
 </div>
 </div>
-<div id="outline-container-org2f1b2f5" class="outline-4">
-<h4 id="org2f1b2f5"><span class="section-number-4">1.4.5.</span> Emacs</h4>
+<div id="outline-container-org574ded5" class="outline-4">
+<h4 id="org574ded5"><span class="section-number-4">1.4.5.</span> Emacs</h4>
 <div class="outline-text-4" id="text-1-4-5">
 <p>
 I use emacs for most things, so it is already installed in moby.
@@ -393,67 +394,79 @@ I use emacs for most things, so it is already installed in moby.
 </div>
 </div>
 </div>
-<div id="outline-container-org7fc5988" class="outline-2">
-<h2 id="org7fc5988"><span class="section-number-2">2.</span> Papers</h2>
+<div id="outline-container-org8db9bbc" class="outline-2">
+<h2 id="org8db9bbc"><span class="section-number-2">2.</span> Papers</h2>
 <div class="outline-text-2" id="text-2">
 <p>
 This may help you get more context
 </p>
 </div>
-<div id="outline-container-orgbb2fe85" class="outline-3">
-<h3 id="orgbb2fe85"><span class="section-number-3">2.1.</span> Morphological profiling</h3>
+<div id="outline-container-org1b1799e" class="outline-3">
+<h3 id="org1b1799e"><span class="section-number-3">2.1.</span> Morphological profiling</h3>
 <div class="outline-text-3" id="text-2-1">
 <ul class="org-ul">
 <li>What is cell painting</li>
-<li>The main dataset we will work on Chandrasekaran et al. 2023.</li>
-<li>Review on ML on morphological profiles Chandrasekaran et al. 2021.</li>
+<li>The main dataset we will work on (<a href="#citeproc_bib_item_1">Chandrasekaran et al. 2023</a>).</li>
+<li>Review on ML on morphological profiles (<a href="#citeproc_bib_item_2">Chandrasekaran et al. 2021</a>).</li>
 </ul>
 </div>
 </div>
-<div id="outline-container-orgd27045f" class="outline-3">
-<h3 id="orgd27045f"><span class="section-number-3">2.2.</span> Statistics</h3>
+<div id="outline-container-org29b67c9" class="outline-3">
+<h3 id="org29b67c9"><span class="section-number-3">2.2.</span> Statistics</h3>
 <div class="outline-text-3" id="text-2-2">
 <ul class="org-ul">
-<li>How do we calculate reproducibility in Cell Painting experiments? Kalinin et al. 2024</li>
+<li>How do we calculate reproducibility in Cell Painting experiments? (<a href="#citeproc_bib_item_4">Kalinin et al. 2024</a>)</li>
 </ul>
 </div>
 </div>
-<div id="outline-container-org2a0eb69" class="outline-3">
-<h3 id="org2a0eb69"><span class="section-number-3">2.3.</span> Intepretable Deep Learning</h3>
+<div id="outline-container-orgcdfb053" class="outline-3">
+<h3 id="orgcdfb053"><span class="section-number-3">2.3.</span> Intepretable Deep Learning</h3>
 <div class="outline-text-3" id="text-2-3">
 </div>
-<div id="outline-container-org589f1f3" class="outline-4">
-<h4 id="org589f1f3"><span class="section-number-4">2.3.1.</span> Counterfactuals</h4>
+<div id="outline-container-org74a9278" class="outline-4">
+<h4 id="org74a9278"><span class="section-number-4">2.3.1.</span> Counterfactuals</h4>
 <div class="outline-text-4" id="text-2-3-1">
 <ul class="org-ul">
-<li>The basis of our plan. A new preprint will be released soon. Eckstein et al. 2021</li>
+<li>The basis of our plan. A new preprint will be released soon. (<a href="#citeproc_bib_item_3">Eckstein et al. 2021</a>)</li>
 </ul>
 </div>
 </div>
-<div id="outline-container-org4d6f14b" class="outline-4">
-<h4 id="org4d6f14b"><span class="section-number-4">2.3.2.</span> Generative modelling</h4>
+<div id="outline-container-orgdf0e347" class="outline-4">
+<h4 id="orgdf0e347"><span class="section-number-4">2.3.2.</span> Generative modelling</h4>
 <div class="outline-text-4" id="text-2-3-2">
 <ul class="org-ul">
-<li>Recent work in the interface of morphological profiling and Generative Deep Learning Lamiable et al. 2023</li>
+<li>Recent work in the interface of morphological profiling and Generative Deep Learning (<a href="#citeproc_bib_item_5">Lamiable et al. 2023</a>)</li>
 </ul>
 </div>
 </div>
 </div>
 </div>
-<div id="outline-container-org53c7082" class="outline-2">
-<h2 id="org53c7082"><span class="section-number-2">3.</span> Selected important events</h2>
+<div id="outline-container-orgc21c7cd" class="outline-2">
+<h2 id="orgc21c7cd"><span class="section-number-2">3.</span> Selected important events</h2>
 <div class="outline-text-2" id="text-3">
 <ul class="org-ul">
-<li><span class="timestamp-wrapper"><span class="timestamp">&lt;2024-07-02 Tue&gt; </span></span> Alán&rsquo;s presentation with Janelia folks for a potential collaboration on Counterfactuals (See <a href="#org589f1f3">Counterfactuals</a>).</li>
+<li><span class="timestamp-wrapper"><span class="timestamp">&lt;2024-07-02 Tue&gt; </span></span> Alán&rsquo;s presentation with Janelia folks for a potential collaboration on Counterfactuals (See <a href="#org74a9278">Counterfactuals</a>).</li>
 <li>~<span class="timestamp-wrapper"><span class="timestamp">&lt;2024-07-26 Fri&gt;  </span></span>  Mock Hackathon alongside CytoData to iron-out the issues and details necessary before the actual hackathon.</li>
 <li><span class="timestamp-wrapper"><span class="timestamp">&lt;2024-09-17 Tue&gt; </span></span> Hackathon organised by Alán, as part of SBI2-CytoData.</li>
 </ul>
 </div>
 </div>
+<div id="outline-container-orgd35cd75" class="outline-2">
+<h2 id="orgd35cd75"><span class="section-number-2">4.</span> Bibliography</h2>
+<div class="outline-text-2" id="text-4">
+<style>.csl-entry{text-indent: -1.5em; margin-left: 1.5em;}</style><div class="csl-bib-body">
+  <div class="csl-entry"><a id="citeproc_bib_item_1"></a>Chandrasekaran, Srinivas Niranj, Jeanelle Ackerman, Eric Alix, D. Michael Ando, John Arevalo, Melissa Bennion, Nicolas Boisseau, et al. 2023. “JUMP Cell Painting Dataset: Morphological Impact of 136,000 Chemical and Genetic Perturbations.” bioRxiv. <a href="https://doi.org/10.1101/2023.03.23.534023">https://doi.org/10.1101/2023.03.23.534023</a>.</div>
+  <div class="csl-entry"><a id="citeproc_bib_item_2"></a>Chandrasekaran, Srinivas Niranj, Hugo Ceulemans, Justin D. Boyd, and Anne E. Carpenter. 2021. “Image-Based Profiling for Drug Discovery: Due for a Machine-Learning Upgrade?” <i>Nature Reviews Drug Discovery</i> 20 (2): 145–59. <a href="https://doi.org/10.1038/s41573-020-00117-w">https://doi.org/10.1038/s41573-020-00117-w</a>.</div>
+  <div class="csl-entry"><a id="citeproc_bib_item_3"></a>Eckstein, Nils, Alexander S. Bates, Gregory S. X. E. Jefferis, and Jan Funke. 2021. “Discriminative Attribution from Counterfactuals.” arXiv. <a href="https://doi.org/10.48550/arXiv.2109.13412">https://doi.org/10.48550/arXiv.2109.13412</a>.</div>
+  <div class="csl-entry"><a id="citeproc_bib_item_4"></a>Kalinin, Alexandr A., John Arevalo, Loan Vulliard, Erik Serrano, Hillary Tsang, Michael Bornholdt, Bartek Rajwa, Anne E. Carpenter, Gregory P. Way, and Shantanu Singh. 2024. “A Versatile Information Retrieval Framework for Evaluating Profile Strength and Similarity.” <i>Biorxiv</i>, April, 2024.04.01.587631. <a href="https://doi.org/10.1101/2024.04.01.587631">https://doi.org/10.1101/2024.04.01.587631</a>.</div>
+  <div class="csl-entry"><a id="citeproc_bib_item_5"></a>Lamiable, Alexis, Tiphaine Champetier, Francesco Leonardi, Ethan Cohen, Peter Sommer, David Hardy, Nicolas Argy, et al. 2023. “Revealing Invisible Cell Phenotypes with Conditional Generative Modeling.” <i>Nature Communications</i> 14 (1): 6386. <a href="https://doi.org/10.1038/s41467-023-42124-6">https://doi.org/10.1038/s41467-023-42124-6</a>.</div>
+</div>
+</div>
+</div>
 </div>
 <div id="postamble" class="status">
 <p class="author">Author: Alán Muñoz</p>
-<p class="date">Created: 2024-06-06 Thu 17:54</p>
+<p class="date">Created: 2024-06-06 Thu 18:45</p>
 </div>
 </body>
 </html>
