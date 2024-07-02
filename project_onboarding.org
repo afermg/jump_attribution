@@ -89,6 +89,9 @@ This may help you get more context
 *** Generative modelling
 - Recent work in the interface of morphological profiling and Generative Deep Learning [cite:@lamiableRevealingInvisibleCell2023]
 
+** CycleGans and Generative Networks
+[cite:@zhuUnpairedImageToImageTranslation2017]
+
 * Selected important events
 - <2024-07-02 Tue> Alán's presentation with Janelia folks for a potential collaboration on Counterfactuals (See [[*Counterfactuals][Counterfactuals]]).
 - ~<2024-07-26 Fri>  Mock Hackathon alongside CytoData to iron-out the issues and details necessary before the actual hackathon.
