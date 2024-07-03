@@ -1,5 +1,5 @@
 #+title: Interpretable Cells Project
-#+bibliography: mac_bibliography.bib
+#+bibliography: local-bib.bib
 #+cite_export: csl
 
 General resources and how-to's for logistics and our technologies.
