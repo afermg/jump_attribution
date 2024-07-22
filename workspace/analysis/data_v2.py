@@ -15,7 +15,6 @@ def get_table(table_name: str) -> pl.DataFrame:
                          "well",
                          "plate",
                          "moa",
-                         "moa_full"
                          "microscope_config",
                          "target2",
                          "target2_plate"
@@ -29,11 +28,6 @@ def get_table(table_name: str) -> pl.DataFrame:
     
     if table_name == "moa":
         METADATA_LOCATION += "JUMP-MOA/raw/master/JUMP-MOA_compound_metadata.tsv"
-        
-    elif table_name == "moa_full":
-        METADATA_LOCATION = ("https://github.com/broadinstitute/"
-                             "lincs-cell-painting/raw/master/metadata/moa/"
-                             "repurposing_info_external_moa_map_resolved.tsv")
         
     elif table_name == "target2":
         METADATA_LOCATION += "JUMP-Target/raw/master/JUMP-Target-2_compound_metadata.tsv"
@@ -53,7 +47,6 @@ def get_table(table_name: str) -> pl.DataFrame:
         "well": "677d3c1386d967f10395e86117927b430dca33e4e35d9607efe3c5c47c186008",
         "plate": "745391d930627474ec6e3083df8b5c108db30408c0d670cdabb3b79f66eaff48",
         "moa": "52ac2226fe419bb02d668dcbcc51d8dc4f3be1bd3cf108ac0b367d28930588e2",
-        "moa_full": "fa06cb8310a5cf801f5f1ba39bf8176a1b4eefdb4a23d1739ba92be31632b6be",
         "microscope_config": "bf589c5e8cc79b64a3f8ad1436422e32bbf7d746444c638efd156a21ed4af916",
         "target2": "d8e7820746cbc203597b7258c7c3659b46644958e63c81d9a96cb137d8f747ef",
         "target2_plate": "60ac7533b23d2bf94a06f4e1e85ae9f7f6c8c819ca1dc393c46638eab1da0b56"
