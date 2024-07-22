@@ -9,8 +9,18 @@ We plan to use generative Deep Learning tools to
 ** Plan
 *** Data acquisition
 - Selecting which data to acquire
+  - Working with all compounds is tricky as not all compounds has been tested in all sources which may induce bias:
+    - First idea would be to impose filters: at least 3 sources, 2 wells etc.. while removing the minimum amount of compounds.
+    - We could do the same, but instead of removing the minimum amount of compounds, keeping just compounds with a huge amount of samples
+      Obviously most of compounds has a low amount of samples so this conditions would greatly limit the amount of different compounds but might end up
+      in more samples for later cladssification.
+    - Last idea is to use the *Target2 Dataset*
+      - Either using the Target2 plate: each compounds always at the same well.
+      - Either using a enrich version, using compound from Target2 but not necessarily the Target2 plate only resulting in compounds having been tested sometimes
+        more than others but at least in different wells.
   - Find which compounds/genes of JUMP have an associated MoA
 *** Select subset of JUMP data to use as a proxy
+- It might be recquired to crop the image around each nuclei.
 *** Pick, implement and train a generative architecture of a CNN
 - Input:
   - Option A: A given compound
