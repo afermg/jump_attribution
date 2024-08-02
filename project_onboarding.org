@@ -7,7 +7,8 @@ General resources and how-to's for logistics and our technologies.
 ** Overview
 We plan to use generative Deep Learning tools to
 ** Plan
-*** Data acquisition
+*** <2024-07-11 Thu>
+**** Data acquisition
 - Selecting which data to acquire
   - Working with all compounds is tricky as not all compounds has been tested in all sources which may induce bias:
     - First idea would be to impose filters: at least 3 sources, 2 wells etc.. while removing the minimum amount of compounds.
@@ -19,21 +20,67 @@ We plan to use generative Deep Learning tools to
       - Either using a enrich version, using compound from Target2 but not necessarily the Target2 plate only resulting in compounds having been tested sometimes
         more than others but at least in different wells.
   - Find which compounds/genes of JUMP have an associated MoA
-*** Select subset of JUMP data to use as a proxy
+**** Select subset of JUMP data to use as a proxy
 - It might be recquired to crop the image around each nuclei.
-*** Pick, implement and train a generative architecture of a CNN
+**** Pick, implement and train a generative architecture of a CNN
 - Input:
   - Option A: A given compound
   - Option B: A vector in the embedding space
 - Output:
-*** Select a classifier from other projects in the lab
+**** Select a classifier from other projects in the lab
 - X = compound (Adit's classifier)
 
-*** Benchmark
+**** Benchmark
 There are multiple options.
 - MoAs
 - Knowledge graph (see with John)
 - Research other potential benchmarks
+
+*** <2024-08-01 Thu>
+**** Current state as of today:
+***** The data we are working with is Target2 Compounds.
+- This Dataset has been filtered so it is balanced per sources, and per microscope config.
+- All sources use the same number of compounds, not necessarily the same numbers of sample per compounds though.
+***** A classifier has been implemented to predict moa, the pipeline is as follow:
+***** Drop highly correlated features based on the training set, and then Random Forest (or XGBoost)
+***** Some fine tuning has been done (manually, and then with Ray tune but it is not working yet because GPU is not recognised.)
+***** Problem met:
+Classifier are biased toward moa with high sample.
+**** Feedback from the group meeting:
+***** This should not happen.
+- 3 ways to deal with it:
+  Either using SMOTE oversampling: problem since you are creating artificial replicates, is there so much biology behind that?
+  Either using a loss function harder: Focal Loss
+  Either removing moa with little amount of sample.
+***** How to be sure than the classifier is learning on moa and not on compounds?
+- A good way is to test on unseen compound by the training set: So we need more than 1 compound per moa, and so it is significant maybe 3!
+ Downsample this way might result in instead having a 10000 replicates dataset in something like just 1000 replicates or so. This is not a big deal
+ for the classifier purpose but maybe it is for the GANs. Something sure, data augmentation can be done with images (rotation croping etc...)
+***** Other feedback on the score used: I used ROC-AUC.
+Other good metric might be  F1-score / PR-AUC / ROC-AUC. I will go for F1 for multiple reason:
+If we want to compare how good the model is based on sources or well position for example: F1 Score is good for that as it is a simple mathematical relation
+and not necessarily an area under the curve.
+***** Something to keep in mind: Maybe moa is a good way to classify but do not forget TARGET!
+It happens that Target is smoother then moa in term of replicates per target. Now moa might be more biologically relevant than Target.
+Good distinction made by Srijit:
+- Target is more precise in a sense that for a drug, we know if it bound to this target, but we also if it doesn't for another target,
+  and if we just don't have the info.
+- Moa, this is different: a drug is classified with an moa, but we don't know if it could have been assigned to other moa as well.
+  Moa is very dependant on the annotation, we don't have the info if a drug could have had another moa or not etc..
+  Also moa database is maybe smaller than target: in brief, easy to identify a target, trickier to get the moa.
+**** The new plan:
+***** Creating 2 subsets on which working on:
+1. One subset with similar amount of replicates per target
+2. One subset with a similar amount of replicates per moa.
+In any case: At least 3 unique compound per class (for the grouping per compound). Something pretty much balanced on the amount of sample as well.
+Then discuss if we have a large enough Dataset.
+***** Redo the training using grouping on compound. Alternatively, a grouping can be done on sources, or even both!
+***** Get the result. (F1 score and ROC-AUC).
+Important: Try to identify if a source perform better, or eventually if some well perform better:
+HOWEVER: for sources, it should be feasible as all compounds has been tested in all sources.
+BUT, it is not necessarily the case for well, so if we obtain the result per well, it might actually be just be representative of the success of each moa itself.
+Maybe a good idea would be to identify 1 moa (with maybe multiple compound), that has been tested in two different well and see how things change.
+
 
 * Resources
 * Server (moby)
