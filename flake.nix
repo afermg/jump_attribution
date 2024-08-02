@@ -58,7 +58,9 @@
                   packages = with pkgs; [
                     micromamba
                     poetry
-                  ]; 
+                    python310Packages.cupy
+                    python310Packages.ray
+                  ];
                   enterShell = ''
                     
 		    export LD_LIBRARY_PATH=$NIX_LD_LIBRARY_PATH
