@@ -1,6 +1,7 @@
 import seaborn as sns
 import matplotlib.pyplot as plt
 import matplotlib
+import numpy as np
 import polars as pl
 
 def show_distribution(metadata: pl.DataFrame):
@@ -26,7 +27,7 @@ def show_distribution(metadata: pl.DataFrame):
                          .agg(
                              pl.col("Metadata_JCP2022").n_unique().alias("n_compound"),
                              pl.col("Metadata_JCP2022").count().alias("n_sample"))
-                       .sort(by=pl.col("Metadata_Source").str.extract("\D+_(\d+)").cast(pl.Int16)))
+                       .sort(by=pl.col("Metadata_Source").str.extract("\D+_(\d+)")))
      
     info_per_micro = (metadata.group_by("Micro_id")
                          .agg(
@@ -60,10 +61,12 @@ def show_distribution(metadata: pl.DataFrame):
 
     sample_well_map = info_per_well.pivot(index="Well_letter",
                                     columns="Well_numb",
-                                    values="n_sample")
+                                    values="n_sample",
+                                    sort_columns=True)
     compound_well_map = info_per_well.pivot(index="Well_letter",
                                     columns="Well_numb",
-                                    values="n_compound")
+                                    values="n_compound",
+                                    sort_columns=True)
     
     
     fig2, ax2 = plt.subplots(1, figsize=(20,10))
@@ -186,7 +189,9 @@ def replicate_per_source_per_comp(metadata: pl.DataFrame):
                 ax=ax,
                 annot=True)
     ax.set_xticklabels(pivot_compound_source.columns[1:])
-    ax.set_yticklabels((pivot_compound_source.select(pl.col("Metadata_InChIKey").str.extract(("^(\w+)-")))
+    ax.set_yticks(ticks=np.arange(pivot_compound_source.shape[0]),
+                  labels=(pivot_compound_source.select(pl.col("Metadata_InChIKey").str.extract(("^(\w+)-")))
                                                      .to_numpy().reshape(-1)))
     ax.tick_params(axis='y', rotation=0, labelsize='xx-small')
+    ax.set_title("count replicate per compound per source")
 
