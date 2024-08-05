@@ -1,83 +1,82 @@
 {
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-23.11";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.05";
     nixpkgs_master.url = "github:NixOS/nixpkgs/master";
     systems.url = "github:nix-systems/default";
-    devenv.url = "github:cachix/devenv";
+    flake-utils.url = "github:numtide/flake-utils";
+    flake-utils.inputs.systems.follows = "systems";
   };
 
-  nixConfig = {
-    extra-trusted-public-keys = "devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw=";
-    extra-substituters = "https://devenv.cachix.org";
-  };
-
-  outputs = { self, nixpkgs, devenv, systems, ... } @ inputs:
-    let
-      forEachSystem = nixpkgs.lib.genAttrs (import systems);
-    in
-    {
-      packages = forEachSystem (system: {
-        devenv-up = self.devShells.${system}.default.config.procfileScript;
-      });
-
-      devShells = forEachSystem
-        (system:
-          let
+  outputs = { self, nixpkgs, flake-utils, systems, ... } @ inputs:
+      flake-utils.lib.eachDefaultSystem (system:
+        let
             pkgs = import nixpkgs {
               system = system;
               config.allowUnfree = true;
+              config.cudaSupport = true;
             };
 
-            frameworks = pkgs.darwin.apple_sdk.frameworks;
             mpkgs = import inputs.nixpkgs_master {
               system = system;
               config.allowUnfree = true;
+              config.cudaSupport = true;
             };
-
+ 
             libList = [
                 # Add needed packages here
                 pkgs.stdenv.cc.cc
                 pkgs.libGL
                 pkgs.glib
-              ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
-                pkgs.cudaPackages.cudatoolkit
-                pkgs.cudaPackages.libcublas
-                pkgs.cudaPackages.libcurand
+              ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux (with mpkgs.cudaPackages; [
+                libcublas
+                libcurand
                 pkgs.cudaPackages.cudnn
-                pkgs.cudaPackages.libcufft
+                libcufft
+                cuda_cudart
+
+                # This is required for most app that uses graphics api
                 pkgs.linuxPackages.nvidia_x11
-              ];
+              ]);
+
           in
-          {
-            default = devenv.lib.mkShell {
-              inherit inputs pkgs;
-              modules = [
-                {
-                  env.NIX_LD = nixpkgs.lib.fileContents "${pkgs.stdenv.cc}/nix-support/dynamic-linker";
-                  env.NIX_LD_LIBRARY_PATH = nixpkgs.lib.makeLibraryPath libList;
-                  packages = with pkgs; [
-                    micromamba
-                    poetry
-                    python310Packages.cupy
-                    python310Packages.ray
-                  ];
-                  enterShell = ''
-                    
-		    export LD_LIBRARY_PATH=$NIX_LD_LIBRARY_PATH
-                    export SSL_CERT_FILE="${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
-		    export PYTHON_KEYRING_BACKEND=keyring.backends.fail.Keyring
-                    eval "$(micromamba shell hook -s bash)"
-                    if [ ! -d ".venv/envs/counterfactuals" ]; then
-                       micromamba create -r .venv -n counterfactuals python=3.10 ipykernel pytorch torchvision torchaudio pytorch-cuda=11.8 -c pytorch -c nvidia -c conda-forge -y
-                       micromamba activate .venv/envs/counterfactuals 
-                       python -m ipykernel install --user --name counterfactuals
-                       poetry install -vv --with dev --no-root 
-                    fi
-                    micromamba activate .venv/envs/counterfactuals
-                  '';
-                }
-              ];
-            };
-          });
-    };
+          with pkgs;
+        {
+          devShells = {
+              default = let 
+                python_with_pkgs = (pkgs.python311.withPackages(pp: [
+                  pp.torch
+                  pp.torchvision
+                  pp.scikit-image
+                ]));
+              in mkShell {
+                    NIX_LD = runCommand "ld.so" {} ''
+                        ln -s "$(cat '${pkgs.stdenv.cc}/nix-support/dynamic-linker')" $out
+                      '';
+                    NIX_LD_LIBRARY_PATH = lib.makeLibraryPath libList;
+                    packages = [
+                      python_with_pkgs
+                      python311Packages.venvShellHook
+                      mpkgs.python311Packages.cupy
+                      mpkgs.python311Packages.ray
+                      uv
+                    ]
+                    ++ libList; 
+                    venvDir = "./.venv";
+                    postVenvCreation = ''
+                        unset SOURCE_DATE_EPOCH
+                      '';
+                    postShellHook = ''
+                        unset SOURCE_DATE_EPOCH
+                      '';
+                    shellHook = ''
+                        export LD_LIBRARY_PATH=$NIX_LD_LIBRARY_PATH:$LD_LIBRARY_PATH
+                        export PYTHON_KEYRING_BACKEND=keyring.backends.fail.Keyring
+                        runHook venvShellHook
+                        uv pip sync requirements.txt
+                        export PYTHONPATH=${python_with_pkgs}/${python_with_pkgs.sitePackages}:$PYTHONPATH
+                    '';
+                  };
+              };
+        }
+      );
 }
