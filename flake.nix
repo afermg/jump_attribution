@@ -2,6 +2,7 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.05";
     nixpkgs_master.url = "github:NixOS/nixpkgs/master";
+    nixpkgs_ank.url = "github:leoank/nixpkgs/cuda";
     systems.url = "github:nix-systems/default";
     flake-utils.url = "github:numtide/flake-utils";
     flake-utils.inputs.systems.follows = "systems";
@@ -11,6 +12,12 @@
       flake-utils.lib.eachDefaultSystem (system:
         let
             pkgs = import nixpkgs {
+              system = system;
+              config.allowUnfree = true;
+              config.cudaSupport = true;
+            };
+
+            apkgs = import inputs.nixpkgs_ank {
               system = system;
               config.allowUnfree = true;
               config.cudaSupport = true;
@@ -27,26 +34,29 @@
                 pkgs.stdenv.cc.cc
                 pkgs.libGL
                 pkgs.glib
-              ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux (with mpkgs.cudaPackages; [
+              ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux (with apkgs.cudaPackages; [
+                cudatoolkit
+                cutensor
+                libcusparse
+                nccl
                 libcublas
                 libcurand
-                pkgs.cudaPackages.cudnn
+                cudnn
                 libcufft
                 cuda_cudart
+                cuda_nvrtc
 
                 # This is required for most app that uses graphics api
                 pkgs.linuxPackages.nvidia_x11
               ]);
-
           in
           with pkgs;
         {
           devShells = {
               default = let 
-                python_with_pkgs = (pkgs.python311.withPackages(pp: [
-                  pp.torch
-                  pp.torchvision
-                  pp.scikit-image
+                python_with_pkgs = (mpkgs.python311.withPackages(pp: [
+                  pp.ray
+                  (pp.cupy.override { cudaPackages = apkgs.cudaPackages; })
                 ]));
               in mkShell {
                     NIX_LD = runCommand "ld.so" {} ''
@@ -56,9 +66,8 @@
                     packages = [
                       python_with_pkgs
                       python311Packages.venvShellHook
-                      mpkgs.python311Packages.cupy
-                      mpkgs.python311Packages.ray
                       uv
+                      gcc
                     ]
                     ++ libList; 
                     venvDir = "./.venv";
@@ -71,6 +80,8 @@
                     shellHook = ''
                         export LD_LIBRARY_PATH=$NIX_LD_LIBRARY_PATH:$LD_LIBRARY_PATH
                         export PYTHON_KEYRING_BACKEND=keyring.backends.fail.Keyring
+                        export CUDA_HOME=${apkgs.cudaPackages_12_4.cudatoolkit}
+                        export CUDA_PATH=${apkgs.cudaPackages_12_4.cudatoolkit}
                         runHook venvShellHook
                         uv pip sync requirements.txt
                         export PYTHONPATH=${python_with_pkgs}/${python_with_pkgs.sitePackages}:$PYTHONPATH
