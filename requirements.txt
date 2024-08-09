@@ -498,3 +498,15 @@ wrapt==1.16.0
 xgboost==2.1.1
 yarl==1.9.4
     # via aiohttp
+more-itertools==10.4.0
+    # via more-itertools
+ cloudpickle==3.0.0
+    # via hyperopt
+ future==1.0.0
+    # via hyperopt
+ hyperopt==0.2.7
+    # via hyperopt
+ networkx==3.3
+    # via hyperopt
+ py4j==0.10.9.7
+    # via hyperopt
