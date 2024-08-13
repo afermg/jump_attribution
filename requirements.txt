@@ -47,7 +47,8 @@ bleach==6.1.0
     # via nbconvert
 botocore==1.34.131
     # via aiobotocore
-broad-babel==0.1.23
+broad-babel==0.1.22
+    # via jump_portrait
 cattrs==23.2.3
     # via
     #   lsprotocol
@@ -69,6 +70,7 @@ comm==0.2.2
     #   ipywidgets
 contourpy==1.2.1
     # via matplotlib
+cupy-cuda12x==13.2.0
 cycler==0.12.1
     # via matplotlib
 debugpy==1.8.2
@@ -136,7 +138,8 @@ jinja2==3.1.4
     #   nbconvert
 jmespath==1.0.1
     # via botocore
-joblib==1.4.2
+joblib==1.3.2
+    # jump_portrait
     # via
     #   pynndescent
     #   scikit-learn
@@ -210,8 +213,9 @@ markupsafe==2.1.5
     # via
     #   jinja2
     #   nbconvert
-matplotlib==3.9.0
+matplotlib==3.8.4
     # via seaborn
+    # via jump_portrait
 matplotlib-inline==0.1.7
     # via
     #   ipykernel
@@ -300,9 +304,11 @@ platformdirs==4.2.2
     #   jupyter-core
     #   pooch
 plotly==5.23.0
-polars==1.4.1
+polars==0.19.19
     # via broad-babel
-pooch==1.8.2
+    # via jump_portrait
+pooch==1.7.0
+    # via jump_portrait
     # via broad-babel
 prometheus-client==0.20.0
     # via jupyter-server
@@ -499,14 +505,25 @@ xgboost==2.1.1
 yarl==1.9.4
     # via aiohttp
 more-itertools==10.4.0
-    # via more-itertools
- cloudpickle==3.0.0
-    # via hyperopt
- future==1.0.0
-    # via hyperopt
- hyperopt==0.2.7
-    # via hyperopt
- networkx==3.3
-    # via hyperopt
- py4j==0.10.9.7
-    # via hyperopt
+boto3==1.34.131
+    #via jump_portrait
+jump_portrait==0.0.20
+    #via jump_portrait
+s3path==0.5.7
+    #via jump_portrait
+s3transfer==0.10.2
+    #via jump_portrait
+smart-open==7.0.4
+    #via jump_portrait
+cloudpickle==3.0.0
+    #via hyperopt
+future==1.0.0
+    #via hyperopt
+hyperopt==0.2.7
+    #via hyperopt
+networkx==3.3
+    #via hyperopt
+py4j==0.10.9.7
+    #via hyperopt
+more-itertools==10.4.0
+    #via more-itertools
