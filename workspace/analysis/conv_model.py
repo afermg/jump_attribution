@@ -15,7 +15,9 @@ class VGG(nn.Module):
         self.relu = nn.ReLU()
         self.drop = nn.Dropout(p=0.2)
         self.sequence = nn.Sequential(
-                        *[self.conv_block(((12 * (2 ** i)) if i != 0 else self.img_depth), 12 * (2 ** (i + 1)), self.n_conv_list[i]) 
+                        *[self.conv_block((12 * (2 ** (i-1)) if i != 0 else self.img_depth),
+                                          (12 * (2 ** i) if i!=0 else 12),
+                                          self.n_conv_list[i])
                                      for i in range(self.n_conv_block)],
                         nn.Flatten(),
                         *[self.linear_block(self.fc_dim // (4 ** i), self.fc_dim // (4 ** (i + 1)))
@@ -25,7 +27,7 @@ class VGG(nn.Module):
     def conv_block(self, in_ch, out_ch, num_conv):
         return nn.Sequential(
             *sum([(nn.Conv2d(in_channels=(in_ch if i==0 else out_ch), out_channels=out_ch, 
-                             kernel_size=3, stride=1, padding=2),
+                             kernel_size=3, stride=1, padding=1),
                    nn.BatchNorm2d(out_ch),
                    self.relu)
               for i in range(num_conv)], ()),
