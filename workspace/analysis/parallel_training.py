@@ -7,6 +7,8 @@ import torch.multiprocessing as mp
 from torch.utils.data import DataLoader, DistributedSampler
 from torch.nn.parallel import DistributedDataParallel as DDP
 from tqdm import tqdm
+import os
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 from torch.nn.parallel import DistributedDataParallel as DDP
 
@@ -35,7 +37,7 @@ def train(rank, world_size, model, model_param, adam_param, dataset,
     sampler = DistributedSampler(dataset, num_replicas=world_size, rank=rank, shuffle=True)
     dataloader = DataLoader(dataset, batch_size=batch_size, sampler=sampler)
     
-    for epoch in range(epochs):
+    for epoch in (tqdm(range(epochs)) if rank==0 else range(epochs)):
         ddp_model.train()
         sampler.set_epoch(epoch)  # Ensure each epoch sees different data
 
@@ -49,8 +51,11 @@ def train(rank, world_size, model, model_param, adam_param, dataset,
             optimizer.step()
 
             running_loss += loss.item()
-            if batch_idx % log_interval == 0:
-                print(f'Rank {rank}, Epoch [{epoch}/{args.epochs}], Step [{batch_idx}/{len(dataloader)}], Loss: {loss.item():.4f}')
+            # if batch_idx % log_interval == 0:
+            #     print(f'Rank {rank}, Epoch [{epoch}/{epochs}], Step [{batch_idx}/{len(dataloader)}], Loss: {loss.item():.4f}')
+            del data
+            del target
+            torch.cuda.empty_cache()
 
     if rank == 0:
         torch.save(ddp_model.module.state_dict(), f"ddp_trained_model_fold_{fold}.pth")
