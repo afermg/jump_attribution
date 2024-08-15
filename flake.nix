@@ -45,6 +45,9 @@
               default = let 
                 python_with_pkgs = (mpkgs.python311.withPackages(pp: [
                   pp.ray
+                  pp.torch
+                  pp.torchvision
+                  pp.scikit-image
                 ]));
               in mkShell {
                     NIX_LD = runCommand "ld.so" {} ''
