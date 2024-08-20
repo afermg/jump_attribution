@@ -507,7 +507,7 @@ yarl==1.9.4
 more-itertools==10.4.0
 boto3==1.34.131
     #via jump_portrait
-jump_portrait==0.0.20
+jump_portrait==0.0.22
     #via jump_portrait
 s3path==0.5.7
     #via jump_portrait
