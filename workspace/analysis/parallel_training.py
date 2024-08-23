@@ -94,8 +94,8 @@ def train(rank, world_size, model, model_param, adam_param, train_dataset, test_
         ddp_model.train()
         train_sampler.set_epoch(epoch)  # Ensure each epoch sees different data
         test_sampler.set_epoch(epoch)
-        
 
+        train_output_list, train_target_list = [], []
         for train_data, train_target in train_dataloader:
             train_data, train_target = train_data.to(rank), train_target.to(rank)
             optimizer.zero_grad()
@@ -104,11 +104,14 @@ def train(rank, world_size, model, model_param, adam_param, train_dataset, test_
             loss.backward()
             optimizer.step()
 
+            train_output_list.append(train_output.cpu().detach())
+            train_target_list.append(train_target.cpu().detach())
+            
             del train_data, train_target, train_output
             torch.cuda.empty_cache()
 
         if allow_eval==True:
-            train_output_list, train_target_list = eval(rank, ddp_model, train_dataloader)
+            # train_output_list, train_target_list = eval(rank, ddp_model, train_dataloader)
             test_output_list, test_target_list = eval(rank, ddp_model, test_dataloader)
 
             train_gather_output = stacking_gpu(rank, world_size, train_output_list, len(train_sampler))
