@@ -45,6 +45,7 @@ httpcore==1.0.5
 httpx==0.27.0
 hyperopt==0.2.7
 idna==3.7
+ipdb==0.13.13
 ipykernel==6.29.5
 ipython==8.26.0
 ipywidgets==8.1.3
