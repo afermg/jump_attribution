@@ -30,9 +30,10 @@ class LightningModel(L.LightningModule):
         self.save_hyperparameters(ignore="model")
         self.training_step_outputs = []
         self.validation_step_outputs = []
-        self.accuracy = MulticlassAccuracy(num_classes=self.n_class, average="macro")
-        self.rocauc = MulticlassAUROC(num_classes=self.n_class, average="macro")
-        self.f1 = MulticlassF1Score(num_classes=self.n_class, average="macro")
+        self.accuracy = nn.ModuleList([MulticlassAccuracy(num_classes=self.n_class, average="macro") for _ in range(2)])
+        self.rocauc = nn.ModuleList([MulticlassAUROC(num_classes=self.n_class, average="macro") for _ in range(2)])
+        self.f1 = nn.ModuleList([MulticlassF1Score(num_classes=self.n_class, average="macro") for _ in range(2)])
+        self.prefix_to_id = {"train": 0, "val": 1}
 
     def training_step(self, batch, batch_idx):
         # training_step defines the train loop.
@@ -69,15 +70,24 @@ class LightningModel(L.LightningModule):
         return optimizer
 
     def on_train_epoch_end(self):
-        self._shared_eval(self.training_step_outputs, "train")
+        prefix = "train"
+        self._shared_eval(self.training_step_outputs, prefix)
         self.training_step_outputs.clear() # free memory
         self.training_step_outputs = []
+        self.accuracy[self.prefix_to_id[prefix]].reset()
+        self.rocauc[self.prefix_to_id[prefix]].reset()
+        self.f1[self.prefix_to_id[prefix]].reset()
 
-    def on_validation_epoch_end(self): 
-        self._shared_eval(self.validation_step_outputs, "val")
+
+    def on_validation_epoch_end(self):
+        prefix = "val"
+        self._shared_eval(self.validation_step_outputs, prefix)
         self.validation_step_outputs.clear()  # free memory
         self.validation_step_outputs = []
-        
+        self.accuracy[self.prefix_to_id[prefix]].reset()
+        self.rocauc[self.prefix_to_id[prefix]].reset()
+        self.f1[self.prefix_to_id[prefix]].reset()
+
     def _shared_eval(self, prefix_step_outputs, prefix):
         all_preds, all_labels = map(lambda x: list(x), unzip(prefix_step_outputs))
         (all_preds, all_labels) = (self.all_gather(torch.vstack(all_preds)).view(-1, self.n_class), 
@@ -87,13 +97,13 @@ class LightningModel(L.LightningModule):
 
         
         if self.trainer.is_global_zero:
-            self.log(prefix + "_" + "acc", self.accuracy(all_preds, all_labels), 
+            self.log(prefix + "_" + "acc", self.accuracy[self.prefix_to_id[prefix]](all_preds, all_labels),
                      rank_zero_only=True,
                      sync_dist=True)
-            self.log(prefix + "_" + "roc", self.rocauc(all_preds, all_labels), 
+            self.log(prefix + "_" + "roc", self.rocauc[self.prefix_to_id[prefix]](all_preds, all_labels),
                      rank_zero_only=True,
                      sync_dist=True)
-            self.log(prefix + "_" + "f1", self.f1(all_preds, all_labels),
+            self.log(prefix + "_" + "f1", self.f1[self.prefix_to_id[prefix]](all_preds, all_labels),
                      rank_zero_only=True,
                      sync_dist=True)
                              
