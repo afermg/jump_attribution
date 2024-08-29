@@ -275,20 +275,31 @@ def model_memory_usage(model):
 vgg = conv_model.VGG(img_depth=1,
           img_size=485, 
           lab_dim=7, 
-          n_conv_block=5, 
-          n_conv_list=[1 for _ in range(5)], 
+          n_conv_block=4,
+          n_conv_list=[1 for _ in range(4)],
           n_lin_block=3)
 
-print(f'recursive receptive field from very end to start: {compute_receptive_field_recursive(vgg)}')
-print(f'recursive receptive field at the start: {compute_receptive_field(vgg)}')
-model_memory_usage(vgg)
+vgg_ch = conv_model.VGG_ch(
+          img_depth=1,
+          img_size=485,
+          lab_dim=7,
+          conv_n_ch=64,
+          n_conv_block=6,
+          n_conv_list=[2, 2, 2, 2, 4, 4],
+          n_lin_block=3,
+          p_dropout=0.2)
+
+print(f'recursive receptive field from very end to start: {compute_receptive_field_recursive(vgg_ch)}')
+recept_field = compute_receptive_field(vgg_ch)
+print(f'recursive receptive field at the start: {recept_field}')
+#model_memory_usage(vgg)
 
 
 
 #Visualisation of the chosen kernel size relative to the image size
 fig, axes = plt.subplots(1, 1, figsize=(30,30))
 axes.imshow(dataset_fold[0]["train"][1][0][0])
-rect = patches.Rectangle((130, 280), 94, 94, linewidth=7, edgecolor='r', facecolor='none')
+rect = patches.Rectangle((130, 280), recept_field, recept_field, linewidth=7, edgecolor='r', facecolor='none')
 axes.add_patch(rect)
 fig.savefig(file_directory / "kernel_vgg_vs_small_image_size")
 plt.close()
@@ -390,6 +401,7 @@ plt.close()
 # plt.show()
 
 
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 # # Lightning Training
 tb_logger = pl_loggers.TensorBoardLogger(save_dir=Path("logs"))
 checkpoint_callback = ModelCheckpoint(dirpath=Path("lightning_checkpoint_log"),
@@ -400,33 +412,48 @@ checkpoint_callback = ModelCheckpoint(dirpath=Path("lightning_checkpoint_log"),
 
 torch.set_float32_matmul_precision('medium') #try 'high')
 seed_everything(42, workers=True)
-lit_model = LightningModel(conv_model.VGG,
+# lit_model = LightningModel(conv_model.VGG,
+#                            model_param=(1, #img_depth
+#                                         485, #img_size
+#                                         7, #lab_dim
+#                                         5, #n_conv_block
+#                                         [1, 1, 1, 1, 1], #n_conv_list
+#                                         3),
+#                            lr=5e-4,
+#                            weight_decay=5e-3,
+#                            max_epoch=1,
+#                            n_class=7)
+
+lit_model = LightningModel(conv_model.VGG_ch,
                            model_param=(1, #img_depth
                                         485, #img_size
                                         7, #lab_dim
-                                        5, #n_conv_block
-                                        [1, 1, 1, 1, 1], #n_conv_list
-                                        3),
-                           lr=1e-3,
+                                        32, #conv_n_ch
+                                        6, #n_conv_block
+                                        [1, 1, 2, 2, 3, 3], #n_conv_list
+                                        3, #n_lin_block
+                                        0.2), #p_dropout
+                           lr=5e-4,
                            weight_decay=0,
                            max_epoch=1,
                            n_class=7)
 
 trainer = L.Trainer(#default_root_dir="./lightning_checkpoint_log/",
                     accelerator="gpu",
-                    devices=1,
-                    #strategy="ddp",
-                    max_epochs=3,
+                    devices=2,
+                    strategy="ddp_notebook",
+                    max_epochs=50,
                     logger=tb_logger,
-                    profiler="simple",
+                    #profiler="simple",
                     num_sanity_val_steps=0, #to use only if you know the trainer is working !
-                    #callbacks=[checkpoint_callback],
-                    enable_checkpointing=False,
+                    callbacks=[checkpoint_callback],
+                    #enable_checkpointing=False,
+                    enable_progress_bar=False
                     )
 
 import resource
 soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
 resource.setrlimit(resource.RLIMIT_NOFILE, (hard, hard))
 
-trainer.fit(lit_model, DataLoader(dataset_fold[0]["train"], batch_size=128, num_workers=90, shuffle=True, persistent_workers=True),
-            DataLoader(dataset_fold[0]["test"], batch_size=128, num_workers=90, shuffle=True, persistent_workers=True))
+trainer.fit(lit_model, DataLoader(dataset_fold[0]["train"], batch_size=128, num_workers=1, shuffle=True, persistent_workers=True),
+            DataLoader(dataset_fold[0]["test"], batch_size=128, num_workers=1, persistent_workers=True))
