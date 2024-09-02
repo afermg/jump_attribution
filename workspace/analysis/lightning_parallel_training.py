@@ -20,13 +20,14 @@ MulticlassAUROC, MulticlassAccuracy, MulticlassF1Score, MulticlassConfusionMatri
 
 
 class LightningModel(L.LightningModule):
-    def __init__(self, model, model_param, lr, weight_decay, max_epoch, n_class):
+    def __init__(self, model, model_param, lr, weight_decay, max_epoch, n_class, apply_softmax=True):
         super().__init__()
         self.model = model(*model_param)
         self.lr = lr
         self.weight_decay = weight_decay
         self.max_epoch = max_epoch
         self.n_class = n_class
+        self.apply_softmax = apply_softmax
         self.save_hyperparameters(ignore="model")
         self.training_step_outputs = []
         self.validation_step_outputs = []
@@ -93,8 +94,8 @@ class LightningModel(L.LightningModule):
         (all_preds, all_labels) = (self.all_gather(torch.vstack(all_preds)).view(-1, self.n_class), 
                                    self.all_gather(torch.hstack(all_labels)).view(-1))
 
-        all_preds = nn.Softmax(dim=1)(all_preds)
-
+        if self.apply_softmax:
+            all_preds = nn.Softmax(dim=1)(all_preds)
         
         if self.trainer.is_global_zero:
             self.log(prefix + "_" + "acc", self.accuracy[self.prefix_to_id[prefix]](all_preds, all_labels),
