@@ -89,3 +89,74 @@ class VGG_ch(nn.Module):
 
     def forward(self, x):
         return self.sequence(x)
+
+
+class SimpleNN(nn.Module):
+    def __init__(self, input_size, num_classes, hidden_layer_L, p_dopout_L, batchnorm=True):
+        super(SimpleNN, self).__init__()
+        self.relu = nn.ReLU()
+        self.sequence = nn.Sequential(
+            *[self.linear_block((input_size if i == 0 else hidden_layer_L[i-1]),
+                                hidden_layer_L[i],
+                                p_dopout_L[i])
+              for i in range(len(hidden_layer_L))],
+            nn.Linear(hidden_layer_L[-1], num_classes),
+            nn.Softmax(dim=1))
+
+    def linear_block(self, in_dim, out_dim, p_dropout, batchnorm=True):
+        return nn.Sequential(
+            nn.Linear(in_features=in_dim, out_features=out_dim),
+            nn.BatchNorm1d(out_dim) if batchnorm else nn.Identity(),
+            self.relu,
+            nn.Dropout(p_dropout)
+        )
+
+    def forward(self, x):
+        return self.sequence(x)
+
+
+
+class VectorUNet(nn.Module):
+    def __init__(self, input_dim, hidden_dims, output_dim):
+        super(VectorUNet, self).__init__()
+        # Encoder
+        self.relu = nn.ReLU()
+        self.encoder_layers = nn.ModuleList()
+        for h_dim in hidden_dims:
+            self.encoder_layers.append(nn.Linear(input_dim, h_dim))
+            input_dim = h_dim
+
+        # Bottleneck
+        self.bottleneck = nn.Linear(hidden_dims[-1], hidden_dims[-1])
+
+        # Decoder
+        self.decoder_layers = nn.ModuleList()
+        for h_dim in reversed(hidden_dims[:-1]):
+            self.decoder_layers.append(nn.Linear(hidden_dims[-1] * 2, h_dim))
+            hidden_dims[-1] = h_dim
+
+        # Final Layer
+        self.final_layer = nn.Linear(hidden_dims[0] * 2, output_dim)
+
+    def forward(self, x):
+        encodings = []
+
+        # Encoder Forward Pass
+        for layer in self.encoder_layers:
+            x = self.relu(layer(x))
+            encodings.append(x)
+
+        # Bottleneck
+        x = self.relu(self.bottleneck(x))
+
+        # Decoder Forward Pass
+        for i, layer in enumerate(self.decoder_layers):
+            # Skip connection: concatenate encoding from the encoder with the decoder output
+            x = torch.cat([x, encodings[-(i + 1)]], dim=1)
+            x = self.relu(layer(x))
+
+        # Final Layer
+        x = torch.cat([x, encodings[0]], dim=1)
+        x = self.final_layer(x)
+
+        return x
