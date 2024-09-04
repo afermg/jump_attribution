@@ -98,7 +98,8 @@ class SimpleNN(nn.Module):
         self.sequence = nn.Sequential(
             *[self.linear_block((input_size if i == 0 else hidden_layer_L[i-1]),
                                 hidden_layer_L[i],
-                                p_dopout_L[i])
+                                p_dopout_L[i],
+                                batchnorm)
               for i in range(len(hidden_layer_L))],
             nn.Linear(hidden_layer_L[-1], num_classes),
             nn.Softmax(dim=1))
