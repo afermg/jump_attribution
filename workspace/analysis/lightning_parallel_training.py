@@ -8,7 +8,7 @@ import torch
 
 import torch.nn as nn
 import torch.optim as optim
-
+import torchvision
 
 from torch.nn.functional import cross_entropy, l1_loss
 
@@ -207,7 +207,10 @@ class LightningGAN(pl.LightningModule):
             discriminator_param,
             adam_param_g,
             adam_param_d,
-            beta_moving_avg
+            beta_moving_avg,
+            if_reshape_vector=False,
+            H_target_shape=None
+
     ):
         super().__init__()
         self.save_hyperparameters(ignore=["inner_generator", "style_encoder", "generator", "discriminator"])
@@ -217,6 +220,8 @@ class LightningGAN(pl.LightningModule):
         # Networks
         self.generator = generator(inner_generator(*inner_generator_param), style_encoder(*style_encoder_param))
         self.discriminator = discriminator(*discriminator_param)
+        self.generator_ema = generator(inner_generator(*inner_generator_param), style_encoder(*style_encoder_param))
+        self.copy_parameters(self.generator, self.generator_ema)
 
         # Optimizer
         self.adam_param_g = adam_param_g
@@ -224,6 +229,9 @@ class LightningGAN(pl.LightningModule):
 
         # Exponential Moving Average to stabilize the training of GANs
         self.beta_moving_avg = beta_moving_avg
+        # Wether to reshape the vector or not if it is an image already
+        self.if_reshape_vector = if_reshape_vector
+        self.H_target_shape = H_target_shape
 
     def cycle_loss(self, x, x_cycle):
         return l1_loss(x, x_cycle)
@@ -231,6 +239,26 @@ class LightningGAN(pl.LightningModule):
     def adversarial_loss(self, y_hat, y):
         return cross_entropy(y_hat, y)
 
+    def reshape_vector(self, x):
+        """
+        Expect x to have the following dimension 1D: N_features
+        """
+        return x.reshape(1, self.H_target_shape, -1)
+##### NB, these moving average over parameters and copy of parameters only average weights and bias. It does not take into account
+##### Batch Normalization layers ! For a more general implementation, maybe it would be interesting to implement this:
+##### https://github.com/yasinyazici/EMA_GAN/blob/master/common/misc.py#L64
+##### from the paper THE UNUSUAL EFFECTIVENESS OF AVERAGING IN GAN TRAINING Yasin Yazıcı et al. 2019
+    def exponential_moving_average(self, model, ema_model):
+    """Update the EMA model's parameters with an exponential moving average"""
+        for param, ema_param in zip(model.parameters(), ema_model.parameters()):
+            # in place modif of ema_param with : ema_param * 0.999 + 0.001 * param
+            ema_param.data.mul_(self.beta_moving_avg).add_((1 - self.beta_moving_avg) * param.data)
+
+    def copy_parameters(self, source_model, target_model):
+    """Copy the parameters of a model to another model"""
+        for param, target_param in zip(source_model.parameters(), target_model.parameters()):
+            target_param.data.copy_(param.data)
+#####
     def training_step(self, batch):
         x, y = batch
         # Create target and style image
@@ -286,24 +314,47 @@ class LightningGAN(pl.LightningModule):
         self.log("adv_loss", adv_loss, on_epoch=True, logger=True, sync_dist=True)
         self.log("d_loss", d_loss, on_epoch=True, logger=True, sync_dist=True)
 
+        if batch_idx == 0 and self.trainer.is_global_zero:
+            self.log_images_with_colormap(x, x_style, x_fake, x_cycled, y, y_target, idx=0)
+
+        self.exponential_moving_average(self.generator, self.generator_ema)
+
+    def on_train_epoch_end(self):
+        self.copy_parameters(self.generator_ema, self.generator)
+
+
+    def log_images_with_colormap(self, x, x_style, x_fake, x_cycled, y, y_target idx=0):
+        fig, axs = plt.subplots(1, 4, figsize=(12, 4))
+        # Convert tensors to NumPy
+        input_img = x[idx].cpu().detach().numpy()
+        style_img = x_style[idx].cpu().detach().numpy()
+        fake_img = x_fake[idx].cpu().detach().numpy()
+        cycled_img = x_cycled[idx].cpu().detach().numpy()
+        input_class = y[idx].cpu().detach().numpy()
+        style_class = y_target[idx].cpu().detach().numpy()
+        if self.if_reshape_vector:
+            input_img = self.reshape_vector(input_img)
+            style_img = self.reshape_vector(style_img)
+            fake_img = self.reshape_vector(fake_img)
+            cycled_img = self.reshape_vector(cycled_img)
+
+        axs[0].imshow(input_img.permute(1, 2, 0).detach().numpy())
+        axs[0].set_title(f"Input image - Class_{input_class}")
+        axs[1].imshow(style_img.permute(1, 2, 0).detach().numpy())
+        axs[1].set_title(f"Style image - Class_{style_class}")
+        axs[2].imshow(fake_img.permute(1, 2, 0).detach().numpy())
+        axs[2].set_title(f"Generated image - Class_{style_class}")
+        axs[3].imshow(cycled_img.permute(1, 2, 0).detach().numpy())
+        axs[3].set_title(f"Cycled image - Class_{input_class}")
+
+        for ax in axs:
+            ax.axis("off")
+        # Save the figure as a TensorBoard image
+        self.logger.experiment.add_figure("train/generated_images", fig, self.current_epoch)
+        plt.close(fig)
 
     def configure_optimizers(self):
-        opt_g = torch.optim.Adam(**self.adam_param_g)
-        opt_d = torch.optim.Adam(**self.adam_param_d)
+        opt_g = torch.optim.Adam(self.generator.parameters(), **self.adam_param_g)
+        opt_d = torch.optim.Adam(self.discriminator.parameters(), **self.adam_param_d)
         return [opt_g, opt_d], []
 
-    def on_validation_epoch_end(self):
-        z = self.validation_z.type_as(self.generator.model[0].weight)
-
-        # log sampled images
-        sample_imgs = self(z)
-        grid = torchvision.utils.make_grid(sample_imgs)
-        self.logger.experiment.add_image("validation/generated_images", grid, self.current_epoch)
-
-
-
-
-        # log sampled images
-        sample_imgs = self.generated_imgs[:6]
-        grid = torchvision.utils.make_grid(sample_imgs)
-        self.logger.experiment.add_image("train/generated_images", grid, self.current_epoch)

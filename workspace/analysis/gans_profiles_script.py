@@ -80,7 +80,7 @@ dataset_fold = {i:
 for i in range(len(kfold)):
     scaler = RobustScaler()
     scaler.fit(X[kfold[i][0]])
-    dataset_fold[i]["train"] =  custom_dataset.RowDataset(torch.tensor(scaler.transform(X[kfold[i][0]]), dtype=torch.float), y[kfold[i][0]])
+    dataset_fold[i]["train"] = custom_dataset.RowDataset(torch.tensor(scaler.transform(X[kfold[i][0]]), dtype=torch.float), y[kfold[i][0]])
     dataset_fold[i]["test"] = custom_dataset.RowDataset(torch.tensor(scaler.transform(X[kfold[i][1]]), dtype=torch.float), y[kfold[i][1]])
 
 
@@ -138,39 +138,6 @@ trainer.fit(lit_model, DataLoader(dataset_fold[fold]["train"], batch_size=len(da
 #     "SimpleNN_profiles_fold_3epoch=999-train_acc=0.81-val_acc=0.35.ckpt",
 #     "SimpleNN_profiles_fold_4epoch=999-train_acc=0.79-val_acc=0.47.ckpt",
 #     ]
-# fold_model = {i: LightningModel.load_from_checkpoint(Path("lightning_checkpoint_log") / trained_model_path[i],model=conv_model.SimpleNN).model
-#               for i in list(dataset_fold.keys())}
-# # 2) Get an attribution
-# Goal understand what the model has learnt
 
 
-
-# fold = 0
-# model = trained_model[fold].to(device)
-
-# batch_size = 7 #num class as well
-# batch = []
-# for i in range(batch_size):
-#     batch.append(next(row for row in dataset_fold[fold]["train"] if row[1] == i))
-# X = torch.stack([b[0] for b in batch])
-# y = torch.tensor([b[1] for b in batch])
-# X = X.to(device).requires_grad_()
-# y = y.to(device)
-
-
-
-
-
-# torch.gradient(model(X)[:, 0], spacing = X)
-
-
-
-
-
-# model(X)[:, 0]
-
-
-
-
-
-# X.shape
+# # GAN training
