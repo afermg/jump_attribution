@@ -1,8 +1,7 @@
 import lightning as L
 
-import os
 import numpy as np
-import pandas as pd
+import matplotlib.pyplot as plt
 from more_itertools import unzip
 import torch
 
@@ -195,7 +194,7 @@ class LightningModelV2(L.LightningModule):
 
 
     
-class LightningGAN(pl.LightningModule):
+class LightningGAN(L.LightningModule):
     def __init__(
             self,
             inner_generator,
@@ -204,12 +203,15 @@ class LightningGAN(pl.LightningModule):
             discriminator,
             inner_generator_param,
             style_encoder_param,
+            generator_param,
             discriminator_param,
             adam_param_g,
             adam_param_d,
             beta_moving_avg,
+            n_class,
             if_reshape_vector=False,
-            H_target_shape=None
+            H_target_shape=None,
+            apply_softmax=False
 
     ):
         super().__init__()
@@ -218,9 +220,11 @@ class LightningGAN(pl.LightningModule):
         self.automatic_optimization = False
 
         # Networks
-        self.generator = generator(inner_generator(*inner_generator_param), style_encoder(*style_encoder_param))
-        self.discriminator = discriminator(*discriminator_param)
-        self.generator_ema = generator(inner_generator(*inner_generator_param), style_encoder(*style_encoder_param))
+        self.generator = generator(inner_generator(**inner_generator_param), style_encoder(**style_encoder_param),
+                                   **generator_param)
+        self.discriminator = discriminator(**discriminator_param)
+        self.generator_ema = generator(inner_generator(**inner_generator_param), style_encoder(**style_encoder_param),
+                                       **generator_param)
         self.copy_parameters(self.generator, self.generator_ema)
 
         # Optimizer
@@ -229,10 +233,14 @@ class LightningGAN(pl.LightningModule):
 
         # Exponential Moving Average to stabilize the training of GANs
         self.beta_moving_avg = beta_moving_avg
+        self.n_class = n_class
         # Wether to reshape the vector or not if it is an image already
         self.if_reshape_vector = if_reshape_vector
         self.H_target_shape = H_target_shape
-
+        # Accuracy
+        self.train_accuracy_true = MulticlassAccuracy(num_classes=self.n_class, average="macro")
+        self.train_accuracy_fake = MulticlassAccuracy(num_classes=self.n_class, average="macro")
+        self.apply_softmax = apply_softmax
     def cycle_loss(self, x, x_cycle):
         return l1_loss(x, x_cycle)
 
@@ -249,17 +257,17 @@ class LightningGAN(pl.LightningModule):
 ##### https://github.com/yasinyazici/EMA_GAN/blob/master/common/misc.py#L64
 ##### from the paper THE UNUSUAL EFFECTIVENESS OF AVERAGING IN GAN TRAINING Yasin Yazıcı et al. 2019
     def exponential_moving_average(self, model, ema_model):
-    """Update the EMA model's parameters with an exponential moving average"""
+        """Update the EMA model's parameters with an exponential moving average"""
         for param, ema_param in zip(model.parameters(), ema_model.parameters()):
             # in place modif of ema_param with : ema_param * 0.999 + 0.001 * param
             ema_param.data.mul_(self.beta_moving_avg).add_((1 - self.beta_moving_avg) * param.data)
 
     def copy_parameters(self, source_model, target_model):
-    """Copy the parameters of a model to another model"""
+        """Copy the parameters of a model to another model"""
         for param, target_param in zip(source_model.parameters(), target_model.parameters()):
             target_param.data.copy_(param.data)
 #####
-    def training_step(self, batch):
+    def training_step(self, batch, batch_idx):
         x, y = batch
         # Create target and style image
         random_index = torch.randperm(len(y))
@@ -271,8 +279,7 @@ class LightningGAN(pl.LightningModule):
         # Train generator
         # Disable grad
         self.toggle_optimizer(optimizer_g) #Require grad
-        self.untoggle_optimizer(optimizer_d) #Disable grad
-
+        optimizer_g.zero_grad()
         # Generate images
         x_fake = self.generator(x, x_style)
         x_cycle = self.generator(x_fake, x)
@@ -281,22 +288,22 @@ class LightningGAN(pl.LightningModule):
 
         # Losses to  train the generator
         # 1. make sure the image can be reconstructed
-        cycle_loss = self.cycle_loss(x, x_cycled)
+        cycle_loss = self.cycle_loss(x, x_cycle)
         # 2. make sure the discriminator is fooled
         adv_loss = self.adversarial_loss(discriminator_x_fake, y_target)
         # Total g_loss
         g_loss = cycle_loss + adv_loss
         # Optimize the generator
-        optimizer_g.zero_grad()
         self.manual_backward(g_loss)
         optimizer_g.step()
+        self.untoggle_optimizer(optimizer_g) #Disable grad
 
         # Train Discriminator
         self.toggle_optimizer(optimizer_d) #Require grad
-        self.untoggle_optimizer(optimizer_g) #Disable grad
-
-        discriminator_x = discriminator(x)
-        discriminator_x_fake = discriminator(x_fake.detach())
+        optimizer_d.zero_grad()
+        # Discriminate
+        discriminator_x = self.discriminator(x)
+        discriminator_x_fake = self.discriminator(x_fake.detach())
         # Losses to train the discriminator
         # 1. make sure the discriminator can tell real is real
         real_loss = self.adversarial_loss(discriminator_x, y)
@@ -304,50 +311,61 @@ class LightningGAN(pl.LightningModule):
         fake_loss = -self.adversarial_loss(discriminator_x_fake, y_target)
         # Total d_loss
         d_loss = (real_loss + fake_loss) * 0.5
+        # compute accuracy
+        if self.apply_softmax:
+            discriminator_x = nn.Softmax(dim=1)(discriminator_x)
+            discriminator_x_fake = nn.Softmax(dim=1)(discriminator_x_fake)
+        self.train_accuracy_true.update(discriminator_x, y)
+        self.train_accuracy_fake.update(discriminator_x_fake, y_target)
         # Optimize the discriminator
-        optimizer_d.zero_grad()
         self.manual_backward(d_loss)
         optimizer_d.step()
+        self.untoggle_optimizer(optimizer_d) #Disable grad
 
         # Logging every loss.
         self.log("cycle_loss", cycle_loss, on_epoch=True, logger=True, sync_dist=True)
         self.log("adv_loss", adv_loss, on_epoch=True, logger=True, sync_dist=True)
         self.log("d_loss", d_loss, on_epoch=True, logger=True, sync_dist=True)
 
-        if batch_idx == 0 and self.trainer.is_global_zero:
-            self.log_images_with_colormap(x, x_style, x_fake, x_cycled, y, y_target, idx=0)
+        if batch_idx == 0 and self.trainer.is_global_zero and (self.current_epoch == self.trainer.max_epochs - 1):
+            self.log_images_with_colormap(x, x_style, x_fake, x_cycle, y, y_target, num=4)
 
         self.exponential_moving_average(self.generator, self.generator_ema)
 
+
     def on_train_epoch_end(self):
         self.copy_parameters(self.generator_ema, self.generator)
+        self.log("train_acc_true", self.train_accuracy_true.compute(), on_epoch=True, sync_dist=True)
+        self.log("train_acc_fake", self.train_accuracy_fake.compute(), on_epoch=True, sync_dist=True)
+        self.train_accuracy_true.reset()
+        self.train_accuracy_fake.reset()
 
-
-    def log_images_with_colormap(self, x, x_style, x_fake, x_cycled, y, y_target idx=0):
-        fig, axs = plt.subplots(1, 4, figsize=(12, 4))
+    def log_images_with_colormap(self, x, x_style, x_fake, x_cycle, y, y_target, num=4):
+        fig, axs = plt.subplots(num, 4, figsize=(15, 20), squeeze=False)
         # Convert tensors to NumPy
-        input_img = x[idx].cpu().detach().numpy()
-        style_img = x_style[idx].cpu().detach().numpy()
-        fake_img = x_fake[idx].cpu().detach().numpy()
-        cycled_img = x_cycled[idx].cpu().detach().numpy()
-        input_class = y[idx].cpu().detach().numpy()
-        style_class = y_target[idx].cpu().detach().numpy()
-        if self.if_reshape_vector:
-            input_img = self.reshape_vector(input_img)
-            style_img = self.reshape_vector(style_img)
-            fake_img = self.reshape_vector(fake_img)
-            cycled_img = self.reshape_vector(cycled_img)
+        for i in range(num):
+            input_img = x[i]
+            style_img = x_style[i]
+            fake_img = x_fake[i]
+            cycled_img = x_cycle[i]
+            input_class = y[i]
+            style_class = y_target[i]
+            if self.if_reshape_vector:
+                input_img = self.reshape_vector(input_img)
+                style_img = self.reshape_vector(style_img)
+                fake_img = self.reshape_vector(fake_img)
+                cycled_img = self.reshape_vector(cycled_img)
 
-        axs[0].imshow(input_img.permute(1, 2, 0).detach().numpy())
-        axs[0].set_title(f"Input image - Class_{input_class}")
-        axs[1].imshow(style_img.permute(1, 2, 0).detach().numpy())
-        axs[1].set_title(f"Style image - Class_{style_class}")
-        axs[2].imshow(fake_img.permute(1, 2, 0).detach().numpy())
-        axs[2].set_title(f"Generated image - Class_{style_class}")
-        axs[3].imshow(cycled_img.permute(1, 2, 0).detach().numpy())
-        axs[3].set_title(f"Cycled image - Class_{input_class}")
+            axs[i][0].imshow(input_img.cpu().permute(1, 2, 0).detach().numpy())
+            axs[i][0].set_title(f"Input image - Class_{input_class}")
+            axs[i][1].imshow(style_img.cpu().permute(1, 2, 0).detach().numpy())
+            axs[i][1].set_title(f"Style image - Class_{style_class}")
+            axs[i][2].imshow(fake_img.cpu().permute(1, 2, 0).detach().numpy())
+            axs[i][2].set_title(f"Generated image - Class_{style_class}")
+            axs[i][3].imshow(cycled_img.cpu().permute(1, 2, 0).detach().numpy())
+            axs[i][3].set_title(f"Cycled image - Class_{input_class}")
 
-        for ax in axs:
+        for ax in axs.flatten():
             ax.axis("off")
         # Save the figure as a TensorBoard image
         self.logger.experiment.add_figure("train/generated_images", fig, self.current_epoch)

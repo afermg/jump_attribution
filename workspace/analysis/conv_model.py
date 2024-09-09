@@ -123,21 +123,23 @@ class VectorUNet(nn.Module):
         # Encoder
         self.relu = nn.ReLU()
         self.encoder_layers = nn.ModuleList()
-        for h_dim in hidden_dims:
+        self.hidden_dims = hidden_dims.copy() #list is modified at some point so we want to avoid inplace modification
+        self.output_dim = output_dim
+        for h_dim in self.hidden_dims:
             self.encoder_layers.append(nn.Linear(input_dim, h_dim))
             input_dim = h_dim
 
         # Bottleneck
-        self.bottleneck = nn.Linear(hidden_dims[-1], hidden_dims[-1])
+        self.bottleneck = nn.Linear(self.hidden_dims[-1], self.hidden_dims[-1])
 
         # Decoder
         self.decoder_layers = nn.ModuleList()
-        for h_dim in reversed(hidden_dims[:-1]):
-            self.decoder_layers.append(nn.Linear(hidden_dims[-1] * 2, h_dim))
-            hidden_dims[-1] = h_dim
+        for h_dim in reversed(self.hidden_dims[:-1]):
+            self.decoder_layers.append(nn.Linear(self.hidden_dims[-1] * 2, h_dim))
+            self.hidden_dims[-1] = h_dim
 
         # Final Layer
-        self.final_layer = nn.Linear(hidden_dims[0] * 2, output_dim)
+        self.final_layer = nn.Linear(self.hidden_dims[0] * 2, self.output_dim)
 
     def forward(self, x):
         encodings = []
@@ -161,3 +163,23 @@ class VectorUNet(nn.Module):
         x = self.final_layer(x)
 
         return x
+
+class VectorGenerator(nn.Module):
+
+    def __init__(self, generator, style_encoder, batchnorm_dim=0):
+        super().__init__()
+        self.generator = generator
+        self.style_encoder = style_encoder
+        self.transform = nn.BatchNorm1d(batchnorm_dim) if batchnorm_dim!=0 else nn.Identity()
+
+    def forward(self, x, y):
+        """
+        x: torch.Tensor
+            The source image
+        y: torch.Tensor
+            The style image
+        """
+        style = self.transform(self.style_encoder(y))
+        # Concatenate the style vector with the input image
+        x = torch.cat([x, style], dim=1)
+        return self.generator(x)
