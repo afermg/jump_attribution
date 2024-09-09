@@ -37,7 +37,8 @@ from torch.optim import Adam
 from torch.nn import CrossEntropyLoss
 
 import lightning as L
-from lightning_parallel_training import LightningModel
+from lightning_parallel_training import LightningModel, LightningGAN
+
 from lightning.pytorch import Trainer, seed_everything
 from lightning.pytorch import loggers as pl_loggers
 from lightning.pytorch.callbacks import ModelCheckpoint
@@ -83,7 +84,7 @@ for i in range(len(kfold)):
     dataset_fold[i]["train"] = custom_dataset.RowDataset(torch.tensor(scaler.transform(X[kfold[i][0]]), dtype=torch.float), y[kfold[i][0]])
     dataset_fold[i]["test"] = custom_dataset.RowDataset(torch.tensor(scaler.transform(X[kfold[i][1]]), dtype=torch.float), y[kfold[i][1]])
 
-
+"""
 # # 2 Deep Learning model
 fold=4
 # # Lightning Training
@@ -125,7 +126,7 @@ trainer = L.Trainer(
 
 trainer.fit(lit_model, DataLoader(dataset_fold[fold]["train"], batch_size=len(dataset_fold[fold]["train"]), num_workers=1, persistent_workers=True),
             DataLoader(dataset_fold[fold]["test"], batch_size=len(dataset_fold[fold]["test"]), num_workers=1, persistent_workers=True))
-
+"""
 # "SimpleNN_profiles_fold_0_RobustScaler_epoch=461-train_acc=0.83-val_acc=0.55.ckpt"
 # "SimpleNN_profiles_fold_1_RobustScaler_epoch=377-train_acc=0.87-val_acc=0.45.ckpt"
 # "SimpleNN_profiles_fold_2_RobustScaler_epoch=145-train_acc=0.72-val_acc=0.50.ckpt"
@@ -141,3 +142,56 @@ trainer.fit(lit_model, DataLoader(dataset_fold[fold]["train"], batch_size=len(da
 
 
 # # GAN training
+
+fold=0
+# # Lightning Training
+tb_logger = pl_loggers.TensorBoardLogger(save_dir=Path("logs"), name="SimpleNN_GAN_profiles")
+checkpoint_callback = ModelCheckpoint(dirpath=Path("lightning_checkpoint_log"),
+                                      filename=f"SimpleNN_GAN_profiles_fold_{fold}_RobustScaler_"+"{epoch}-{train_acc:.2f}-{val_acc:.2f}",
+                                      #save_top_k=1,
+                                      #monitor="val_acc",
+                                      #mode="max",
+                                      every_n_epochs=500)
+
+torch.set_float32_matmul_precision('medium') #try 'high')
+seed_everything(42, workers=True)
+
+max_epoch = 4000
+lit_model = LightningGAN(
+    conv_model.VectorUNet, # inner_generator,
+    conv_model.SimpleNN, # style_encoder,
+    conv_model.VectorGenerator, # generator,
+    conv_model.SimpleNN, # discriminator,
+    {"input_dim":4650, "hidden_dims":[2048, 1024], "output_dim":3650}, # inner_generator_param,
+    {"input_size":3650, "num_classes": 1000, "hidden_layer_L":[2048, 2048],
+     "p_dopout_L":[0,0], "batchnorm":False}, # style_encoder_param,
+    {"batchnorm_dim": 1000}, #generator_param
+    {"input_size":3650, "num_classes": 7, "hidden_layer_L":[2048, 2048],
+     "p_dopout_L":[0, 0], "batchnorm":False}, # discriminator_param,
+    {"lr": 1e-4}, # adam_param_g,
+    {"lr": 1e-5}, # adam_param_d,
+    0.3, # beta_moving_avg,
+    7, #n_class
+    True, # if_reshape_vector=False,
+    50, # H_target_shape=None
+    False) # apply_softmax=False
+
+batch_size = len(dataset_fold[fold]["train"])
+
+trainer = L.Trainer(
+                    accelerator="gpu",
+                    devices=1,
+                    precision=16,
+                    #strategy="ddp_find_unused_parameters_true"
+                    max_epochs=max_epoch,
+                    logger=tb_logger,
+                    #num_sanity_val_steps=0, #to use only if you know the trainer is working !
+                    callbacks=[checkpoint_callback],
+                    #enable_checkpointing=False,
+                    enable_progress_bar=False,
+                    log_every_n_steps=len(dataset_fold[fold]["train"]) // batch_size
+                    #profiler="simple"
+                    )
+
+trainer.fit(lit_model, DataLoader(dataset_fold[fold]["train"], batch_size=batch_size,
+                                  num_workers=1, persistent_workers=True))
