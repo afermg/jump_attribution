@@ -9,7 +9,8 @@
 
 
 
-
+import matplotlib.pyplot as plt
+import seaborn as sns
 import polars as pl
 import pandas as pd
 
@@ -20,7 +21,7 @@ from tqdm import tqdm
 
 from sklearn.preprocessing import LabelEncoder, StandardScaler, MinMaxScaler, RobustScaler
 from sklearn.pipeline import Pipeline
-from sklearn.metrics import roc_auc_score, f1_score, accuracy_score
+from sklearn.metrics import roc_auc_score, f1_score, accuracy_score, confusion_matrix
 from xgboost import XGBClassifier
 
 from features_engineering import features_drop_corr
@@ -156,27 +157,27 @@ checkpoint_callback = ModelCheckpoint(dirpath=Path("lightning_checkpoint_log"),
 torch.set_float32_matmul_precision('medium') #try 'high')
 seed_everything(42, workers=True)
 
-max_epoch = 4000
+max_epoch = 2000
 lit_model = LightningGAN(
     conv_model.VectorUNet, # inner_generator,
     conv_model.SimpleNN, # style_encoder,
     conv_model.VectorGenerator, # generator,
     conv_model.SimpleNN, # discriminator,
-    {"input_dim":4650, "hidden_dims":[2048, 1024], "output_dim":3650}, # inner_generator_param,
-    {"input_size":3650, "num_classes": 1000, "hidden_layer_L":[2048, 2048],
-     "p_dopout_L":[0,0], "batchnorm":False}, # style_encoder_param,
-    {"batchnorm_dim": 1000}, #generator_param
-    {"input_size":3650, "num_classes": 7, "hidden_layer_L":[2048, 2048],
-     "p_dopout_L":[0, 0], "batchnorm":False}, # discriminator_param,
+    {"input_dim":5150, "hidden_dims":[4096, 2048, 1024], "output_dim":3650}, # inner_generator_param,
+    {"input_size":3650, "num_classes": 1500, "hidden_layer_L":[3000],
+     "p_dopout_L":[0], "batchnorm":False}, # style_encoder_param,
+    {"batchnorm_dim": 1500}, #generator_param
+    {"input_size":3650, "num_classes": 7, "hidden_layer_L":[2048, 2048, 1024, 1024],
+     "p_dopout_L":[0, 0, 0, 0], "batchnorm":False}, # discriminator_param,
     {"lr": 1e-4}, # adam_param_g,
     {"lr": 1e-5}, # adam_param_d,
-    0.3, # beta_moving_avg,
+    0.8, # beta_moving_avg,
     7, #n_class
     True, # if_reshape_vector=False,
     50, # H_target_shape=None
     False) # apply_softmax=False
 
-batch_size = len(dataset_fold[fold]["train"])
+batch_size = 293 #len(dataset_fold[fold]["train"])
 
 trainer = L.Trainer(
                     accelerator="gpu",
@@ -194,4 +195,77 @@ trainer = L.Trainer(
                     )
 
 trainer.fit(lit_model, DataLoader(dataset_fold[fold]["train"], batch_size=batch_size,
-                                  num_workers=1, persistent_workers=True))
+                                  num_workers=1, persistent_workers=True))#,
+                                  #shuffle=True))
+
+
+## GAN Evaluation
+
+# split = "train"
+# num_images = 500
+# device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+# trained_generator = trainer.model.generator.to(device)
+# trained_model_path = [
+#     "SimpleNN_profiles_fold_0_RobustScaler_epoch=461-train_acc=0.83-val_acc=0.55.ckpt",
+#     "SimpleNN_profiles_fold_1_RobustScaler_epoch=377-train_acc=0.87-val_acc=0.45.ckpt",
+#     "SimpleNN_profiles_fold_2_RobustScaler_epoch=145-train_acc=0.72-val_acc=0.50.ckpt",
+#     "SimpleNN_profiles_fold_3_RobustScaler_epoch=341-train_acc=0.88-val_acc=0.41.ckpt",
+#     "SimpleNN_profiles_fold_4_RobustScaler_epoch=209-train_acc=0.79-val_acc=0.51.ckpt"
+#                      ]
+
+# trained_model = {i: LightningModel.load_from_checkpoint(Path("lightning_checkpoint_log") / trained_model_path[i],
+#                                                      model=conv_model.SimpleNN).model.eval() #disable batchnorm and dropout
+#               for i in list(dataset_fold.keys())}
+
+# prototypes = {}
+# for i in range(7):
+#     options = np.where(dataset_fold[fold][split].row_labels == i)[0]
+#     image_index = 0
+#     x, y = dataset_fold[fold][split][options[image_index]]
+#     prototypes[i] = x
+
+# file_directory = Path("/home/hhakem/projects/counterfactuals_projects/workspace/analysis/figures")
+# fig, axs = plt.subplots(1, 7, figsize=(12, 4))
+# for i, ax in enumerate(axs):
+#     ax.imshow(prototypes[i].reshape(1, 50, -1).permute(1, 2, 0))
+#     ax.axis("off")
+#     ax.set_title(f"Prototype {i}")
+# fig.savefig(file_directory / f"{split}_profiles_styles_fold_{fold}.png")
+# plt.close(fig)
+
+
+# random_test = torch.utils.data.Subset(
+#     dataset_fold[fold][split], np.random.choice(len(dataset_fold[fold][split]), num_images, replace=False)
+# )
+# counterfactuals = np.zeros((7, num_images, *prototypes[0].shape))
+
+# predictions = []
+# source_labels = []
+# target_labels = []
+# with torch.inference_mode():
+#     trained_generator.eval()
+#     for i, (x, y) in tqdm(enumerate(random_test), total=num_images, leave=True):
+#         for lbl in range(7):
+#             # Create the counterfactual
+#             x_fake = trained_generator(
+#                 x.unsqueeze(0).to(device), prototypes[lbl].unsqueeze(0).to(device)
+#             )
+#             # Predict the class of the counterfactual image
+#             pred = trained_model[fold](x_fake)
+
+#             # Store the source and target labels
+#             source_labels.append(y)  # The original label of the image
+#             target_labels.append(lbl)  # The desired label of the counterfactual image
+#             # Store the counterfactual image and prediction
+#             counterfactuals[lbl][i] = x_fake.cpu().detach().numpy()
+#             predictions.append(pred.argmax().item())
+
+# fig, ax = plt.subplots(1,1, figsize=(12, 15))
+# cf_cm = confusion_matrix(target_labels, predictions, normalize="true")
+# sns.heatmap(cf_cm, annot=True, fmt=".2f", ax=ax)
+# ax.set_ylabel("True")
+# ax.set_xlabel("Predicted")
+# fig.savefig(file_directory / "Condusion_matrix_generated_image")
+# plt.close(fig)
+
+# print(accuracy_score(target_labels, predictions))
