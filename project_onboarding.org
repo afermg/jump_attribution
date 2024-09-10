@@ -81,7 +81,28 @@ HOWEVER: for sources, it should be feasible as all compounds has been tested in 
 BUT, it is not necessarily the case for well, so if we obtain the result per well, it might actually be just be representative of the success of each moa itself.
 Maybe a good idea would be to identify 1 moa (with maybe multiple compound), that has been tested in two different well and see how things change.
 
-
+*** <2024-09-10 Tue>
+**** What has been done so far:
+***** Downsampling of profiles to balance each class of MoAs.
+Now we have 7 classes with 4 different compounds per moa. We do the training on 3 compounds per class and test on an unseen compound for each class.
+Result of xgboost, or deep learning methods hasn't been so great: in best case scenario, we manage to reach 48% accuracy on the test set on average on 5 fold.
+***** Classifier trained on images
+We use torch lightning to train images quicker with large flexibility (multi gpu and so on). manage to reach similar accuracy (roughly 45%) using a VGG like network. Problem faced, size of the model. Idea, Use ~Model Parallel~ which should be easy to implement using torch lightning. Few things to consider: no transformation at all on images has been done. Image has has just been resize by slicing them in 4. A good idea would be either to crop on cell kernel or krop around a dense amount of cells. Then apply rotation, translation and so on.
+Something to consider has well: only one channel has been tested. Now let's try with even more channels.
+***** Went back on the profiles and start implenmenting a GANs on the profiles:
+To visualise the counterfactuals, rows was just reshape once reshape to therefore plot a square of features. A Robust Scaler has been used to remove highly to allow a better visualisation. A classifier has been trained on the robust scaled data. A GANs has been implemented using the simple structure of Diane. Problem Diane structure use a lot of simplification: First there is no discriminator. Second there is no usage of a gaussian encoding vectors to allow a better low dimension embedding style space. The good news is that it is fairly simple. The GANs manage to produce good result on the training set: To have a metric on generative capacity of the model, first 7 style is sampled (1 image per class from the training set). Then 500 over the 585 are sampled from the training set. Finally 7 * 500 are generated and we try to assess the classification using the trained classifier (which has 84% accuracy on the trained set and \~50% on the test set) We manage to get 75% accuracy. In contrast the test set didn't perform so well with only 38% accuracy. Something to remember is the poor generalization capacity of our classifier (with only 54% accuracy, only 2 class are perfectly classified, 2 cannot be classified, and 3 others has 40-80% accuracy.) The poor capacity of the classifier may explain the discutable result obtained. ~Having a great classifier is fundamental for good assessment of the GANs performance~. ~A good idea would be to use a FID score as well and Iception score to have a metric independant of the classifier.~
+**** Plan as of today
+***** Having a great classifier is fundamental (at least having good performance on almost every class or at least balance performance on every class).
+Improving classifier performance:
+****** Remove vgg and use a resnet or a unet.
+****** Add transformation to reduce overfitting
+****** Use every channels (image with 5 channels instead of only 1)
+****** Finally unbias the training using Training ~Validation~ and Test set.
+To do so, the Validation set should be a split of the test set in half. Indeed the Validation set should not be too different from the test set. if we want to make an assumption on what should be the generalization on the test set. We could as well put again an unseen compound on the validation and the test set but we might not have enough compound (indeed we only have 4 compounds per class so if we want to put 2 compounds in the training, 1 in the validation and 1 in the test set, we really want to have a great confidence within the labelisation of our targets, which is actually not the case.)
+***** Train the simple GANs on images.
+***** If performance are not so great, go back on profiles, implement the more complex GAN using StarGan2. And try again on images.
+***** If performance are not so great, try using Diffusion model.
+***** If performance are not so great, the task might not be feasible with our current dataset: try using a different labelisation, different samples and so on.
 * Resources
 * Server (moby)
 Follow [[https://github.com/broadinstitute/monorepo/tree/2d3fc5a14e3eabe8a2bd7ce6b124a2c11825df5d/management/servers/onboarding.org][these]] instructions to set up access to the server.
