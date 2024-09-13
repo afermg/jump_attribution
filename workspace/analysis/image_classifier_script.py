@@ -9,10 +9,11 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import seaborn as sns
 
-from itertools import groupby
+from itertools import groupby, starmap, product
 from more_itertools import unzip
 
 from data_split import StratifiedGroupKFold_custom
+from sklearn.model_selection import StratifiedShuffleSplit
 
 from jump_portrait.fetch import get_jump_image
 from jump_portrait.utils import batch_processing, parallel
@@ -24,7 +25,8 @@ from sklearn.preprocessing import LabelEncoder
 from sklearn.metrics import roc_auc_score
 
 import torch
-import torch.nn as nn 
+import torch.nn as nn
+from torchvision.transforms import v2
 from torch.utils.data import Dataset, DataLoader
 from torch.optim import Adam
 from torch.nn import CrossEntropyLoss
@@ -110,48 +112,33 @@ def get_jump_image_iter(metadata: pl.DataFrame, channel: List[str],
                                         "img"])
     return features, work_fail
 
-
+channel = ['AGP', 'DNA', 'ER']
 features_pre, work_fail = get_jump_image_iter(metadata_pre.select(pl.col(["Metadata_Source", "Metadata_Batch",
                                                                                "Metadata_Plate", "Metadata_Well"])),
-                                                        channel=['DNA'],#, 'ER', 'AGP', 'Mito', 'RNA'],
+                                                        channel=channel,#, 'ER', 'AGP', 'Mito', 'RNA'],
                                                         site=[str(i) for i in range(1, 7)],
                                                         correction=None) #None, 'Illum'
 
 
 # ### iii) Add 'site' 'channel' and filter out sample which could not be load (using join)
 
-metadata = metadata_pre.join(features_pre.select(pl.all().exclude(["correction", "img"])),
+correct_index = (features_pre.select(pl.all().exclude("correction", "img"))
+.sort(by=["Metadata_Source", "Metadata_Batch", "Metadata_Plate", "Metadata_Well", "site", "channel"])
+.group_by(by=["Metadata_Source", "Metadata_Batch", "Metadata_Plate", "Metadata_Well", "site"], maintain_order=True)
+.all()
+.with_columns(pl.arange(0,len(features_pre)//len(channel)).alias("ID")))
+
+metadata = metadata_pre.select(pl.all().exclude("ID")).join(correct_index,
               on=["Metadata_Source", "Metadata_Batch", "Metadata_Plate", "Metadata_Well"],
-              how="inner").sort(by=["Metadata_Source", "Metadata_Batch", "Metadata_Plate", "Metadata_Well", "site"])
+              how="inner").select("ID", pl.all().exclude("ID")).sort("ID")
 
-metadata = metadata.with_columns(pl.arange(0,len(metadata)).alias("ID"))
-features = features_pre.join(metadata.select(pl.col(["Metadata_Source", "Metadata_Batch", 
-                                                 "Metadata_Plate", "Metadata_Well", "site", "ID"])),
-                         on=["Metadata_Source", "Metadata_Batch", "Metadata_Plate", 
+features = features_pre.join(metadata.select(pl.col(["Metadata_Source", "Metadata_Batch",
+                                                 "Metadata_Plate", "Metadata_Well", "site",  "ID"])),
+                         on=["Metadata_Source", "Metadata_Batch", "Metadata_Plate",
                              "Metadata_Well", "site"],
-                         how="inner").sort(by="ID")
+                         how="inner").sort(by=["ID", "channel"])
 
-
-# ## b) Visualisation of some images
-
-fig, axes = plt.subplots(5, 4, figsize=(30,30))
-axes = axes.flatten()
-select = np.random.randint(0, len(features), (20))
-for i in range(20):
-    axes[i].imshow(features["img"][int(select[i])])
-fig.savefig(file_directory / "multiple_cells", dpi=300)
-plt.close()
-
-#Visualisation of the chosen kernel size relative to the image size
-fig, axes = plt.subplots(1, 1, figsize=(60,60))
-axes.imshow(features["img"][1])
-rect = patches.Rectangle((335, 320), 46, 46, linewidth=7, edgecolor='r', facecolor='none')
-axes.add_patch(rect)
-fig.savefig(file_directory / "kernel_vs_image_size", dpi=300)
-plt.close()
-
-# ## c) Resize images
-
+# ## #a) crop image and stack them
 def crop_square_array(x, des_size):
     h, w = x.shape
     h_off, w_off = (h-des_size)//2, (w-des_size)//2
@@ -160,40 +147,85 @@ def crop_square_array(x, des_size):
 
 shape_image = list(map(lambda x: x.shape, features["img"].to_list()))
 shape_image.sort(key=lambda x:x[0])
-shape_image_count = {k: shape_image.count(k) for k in set(shape_image)}
-image_resized = np.array(list(map(lambda x: crop_square_array(x, shape_image[0][0]), features["img"].to_list())))
+img_crop = list(map(lambda x: crop_square_array(x, shape_image[0][0]), features["img"].to_list()))
+img_stack = np.array([np.stack([item[1] for item in tostack])
+             for idx, tostack in groupby(zip(features["ID"].to_list(), img_crop), key=lambda x: x[0])])
 
-
-# ## d) Encode moa intp moa_id
+# ## b) Encode moa into moa_id
 metadata_df = metadata.to_pandas().set_index(keys="ID")
 metadata_df = metadata_df.assign(moa_id=LabelEncoder().fit_transform(metadata_df["moa"]))
 labels, groups = metadata_df["moa_id"].values, metadata_df["Metadata_InChIKey"].values
 
+# ## c) Clip image
+clip = (1, 99)
+min_clip_img, max_clip_img = np.percentile(img_stack, clip, axis=(2,3), keepdims=True)
+clip_image = np.clip(img_stack,
+                     min_clip_img,
+                     max_clip_img)
 
-# ## e) Split image in 4
+# ## d) Split image in 4
+def slice_image(img, labels, groups):
+    image_size = img.shape[-1]
+    small_image = np.vstack([img[:, :, :image_size//2, :image_size//2],
+               img[:, :, :image_size//2, image_size//2:],
+               img[:, :, image_size//2:, :image_size//2],
+               img[:, :, image_size//2:, image_size//2:]])
+    small_labels = np.hstack([labels for i in range(4)])
+    small_groups = np.hstack([groups for i in range(4)])
+    return small_image, small_labels, small_groups
+small_image, small_labels, small_groups = slice_image(clip_image, labels, groups)
 
-image_size = image_resized.shape[1]
-small_image_resized = np.vstack([image_resized[:, :image_size//2, :image_size//2], 
-           image_resized[:, :image_size//2, image_size//2:],
-           image_resized[:, image_size//2:, :image_size//2],
-           image_resized[:, image_size//2:, image_size//2:]])
-small_labels = np.hstack([labels for i in range(4)])
-small_groups = np.hstack([groups for i in range(4)])
+# ## e) Create the pytorch dataset with respect to kfold split with train val and test set
+kfold_train_test = list(StratifiedGroupKFold_custom(random_state=42).split(small_image, small_labels, small_groups))
+kfold_train_val_test = list(starmap(lambda train, val_test: (train,
+                                                             *list(starmap(lambda val, test: (val_test[val], val_test[test]),
+                        StratifiedShuffleSplit(n_splits=1, random_state=42, test_size=0.5).split(
+                        small_image[val_test], small_labels[val_test])))[0]), kfold_train_test))
 
+# ## #i) Transformation applied to train split
+class rotate_flip_img():
+    def __init__(self, p, seed=42, batch_size=1000):
+        self.rng = np.random.default_rng(seed=seed)
+        self.p = p
+        self.batch_size = batch_size
 
-# ## f) Create the pytorch dataset with respect to kfold split
+    def __call__(self, img, labels):
+        return self.transform(img, labels)
 
+    def transform(self, img, labels):
+        tot_trans_image, tot_trans_labels = [], []
+        for i in range(0, img.shape[0], self.batch_size):
+            img_sample, labels_sample = img[i:i+self.batch_size], labels[i:i+self.batch_size]
+            trans_img, trans_labels = list(map(lambda x: torch.cat(x),
+                                               list(zip(*starmap(lambda func, angle: self.operation(img_sample, labels_sample, func, angle),
+                                                                 list(product([v2.functional.vertical_flip, nn.Identity()], [90, 180, 270, 0]))[:-1])))))
+            tot_trans_image.append(trans_img)
+            tot_trans_labels.append(trans_labels)
+            del trans_img, trans_labels, img_sample, labels_sample
+        #return tot_trans_image, tot_trans_labels
+        tot_trans_image.append(img)
+        tot_trans_labels.append(labels)
+        tot_trans_image, tot_trans_labels = torch.cat(tot_trans_image), torch.cat(tot_trans_labels)
+        shuffle_seq = self.rng.permutation(tot_trans_image.shape[0])
+        return tot_trans_image[shuffle_seq], tot_trans_labels[shuffle_seq]
 
-kfold = list(StratifiedGroupKFold_custom().split(small_image_resized, small_labels, small_groups))
+    def operation(self, img, labels, func, angle):
+        batch_length = img.shape[0]
+        sample = self.rng.choice(batch_length, size=int(self.p * batch_length), replace=False)
+        return (v2.functional.rotate(func(img[sample]), angle=angle), labels[sample])
 
-
-small_image_resized_tensor = torch.unsqueeze(torch.tensor(small_image_resized, dtype=torch.float), 1)
+    
+small_image_tensor = torch.tensor(small_image, dtype=torch.float)
 small_labels_tensor = torch.tensor(small_labels, dtype=torch.long)
-dataset_fold = {i: {"train": custom_dataset.ImageDataset(small_image_resized_tensor[kfold[i][0]], 
-                                                         small_labels_tensor[kfold[i][0]]),
-     "test": custom_dataset.ImageDataset(small_image_resized_tensor[kfold[i][1]], small_labels_tensor[kfold[i][1]])}
- for i in range(len(kfold))}
-
+fold_L = [0]
+dataset_fold = {i: {"train": custom_dataset.ImageDataset(small_image_tensor[kfold_train_val_test[i][0]],
+                                                         small_labels_tensor[kfold_train_val_test[i][0]],
+                                                         rotate_flip_img(p=0.1, seed=42)),
+                    "val": custom_dataset.ImageDataset(small_image_tensor[kfold_train_val_test[i][1]],
+                                                         small_labels_tensor[kfold_train_val_test[i][1]]),
+                    "test": custom_dataset.ImageDataset(small_image_tensor[kfold_train_val_test[i][2]],
+                                                        small_labels_tensor[kfold_train_val_test[i][2]])}
+                for i in fold_L}
 
 # ### i) Memory usage per fold
 
@@ -304,101 +336,10 @@ axes.add_patch(rect)
 fig.savefig(file_directory / "kernel_vgg_vs_small_image_size")
 plt.close()
 
-# ### No need for parallel model
-# ### Let's however speed up training by taking advantage of the 2 GPU. 
-
-# # 3) Trainer
-
-# ## a) DistributedDataParallel
-
-# run_train(model=conv_model.VGG,
-#           model_param=(1, #img_depth
-#                        970, #img_size
-#                        7, #lab_dim
-#                        6, #n_conv_block
-#                        [2, 2, 2, 2, 2, 2], #n_conv_list
-#                        3), #n_lin_block
-#           adam_param={"lr": 1e-3,
-#                       "weight_decay":0}, 
-#           dataset=dataset_fold[0]["train"],
-#           batch_size=16, 
-#           epochs=100, 
-#           fold=0,
-#           filename='ddp_trained_model_fold_',
-#           log_loss={})
 
 
-# import os
-# os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
-# os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 
 
-# torch.cuda.empty_cache()
-# res_df = run_train(
-#           model=conv_model.VGG,
-#           model_param=(1, #img_depth
-#                        485, #img_size
-#                        7, #lab_dim
-#                        5, #n_conv_block
-#                        [1, 1, 1, 1, 1], #n_conv_list
-#                        3), #n_lin_block
-#           adam_param={"lr": 1e-3,
-#                       "weight_decay":0},
-#           train_dataset=dataset_fold[0]["train"],
-#           test_dataset=dataset_fold[0]["test"],
-#           batch_size=512,
-#           epochs=3,
-#           fold=0,
-#           filename='vgg8',
-#           allow_eval=True
-# )
-
-
-# res_df = pd.read_pickle("trained_model/vgg8_fold_0_result.pkl")
-
-
-# def train_test_line_plot(train_arr, test_arr, ax, title, ylabel):
-#     num_epoch = len(train_arr)
-#     sns.lineplot(train_arr, ax=ax, label="train")
-#     sns.lineplot(test_arr, ax=ax, label="test")
-#     ax.legend(title="split")
-#     ax.set_title(title)
-#     ax.set_xlabel("epochs")
-#     ax.set_ylabel(ylabel)
-#     ax.set_xticks(np.arange(num_epoch), np.arange(num_epoch))
-#     return ax
-
-
-# fig, axes = plt.subplots(3,3, figsize=(20, 19))
-# axes[0][0] = train_test_line_plot(res_df.loc["losses"]["train"], res_df.loc["losses"]["test"],
-#                      ax=axes[0][0],
-#                      title="losses across epochs",
-#                      ylabel="losses")
-# for i, split in enumerate(["train", "test"]):
-#     sns.heatmap(res_df.loc["matrix"][split], ax=axes[0][i+1], annot=True, fmt=".0f")
-#     axes[0][i+1].set_xlabel("predicted label")
-#     axes[0][i+1].set_ylabel("true label")
-#     axes[0][i+1].set_title(f"{split} confusion matrix last epoch")
-# for i, metric_key in enumerate(["acc", "roc", "f1"]):
-#     metric_train, metric_test = res_df.loc[metric_key]["train"], res_df.loc[metric_key]["test"]
-#     axes[1][i] = train_test_line_plot(metric_train.mean(axis=1), metric_test.mean(axis=1),
-#                                       ax=axes[1][i],
-#                                       title=f"avg {metric_key} across epoch",
-#                                       ylabel=metric_key)
-
-#     # Combine train and test last epoch data into a DataFrame
-#     num_class = metric_train.shape[1]
-#     df = pd.DataFrame({
-#         'class': list(range(num_class)) + list(range(num_class)),
-#         metric_key: list(metric_train[-1, :]) + list(metric_test[-1, :]),
-#         'split': ["train"] * num_class + ["test"] * num_class
-#     })
-
-#     # Create the barplot
-#     sns.barplot(x='class', y=metric_key, hue='split', data=df, ax=axes[2][i])
-#     axes[2][i].set_title(f"{metric_key} last epoch across classes")
-# # Display the plot
-# plt.show()
 
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"

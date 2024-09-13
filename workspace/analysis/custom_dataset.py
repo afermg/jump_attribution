@@ -2,12 +2,13 @@ import torch
 from torch.utils.data import Dataset
 
 class ImageDataset(Dataset):
-    def __init__(self, imgs, labels, transform=None, target_transform=None):
+    def __init__(self, imgs, labels, transform=None):
         super().__init__()
-        self.imgs = imgs
-        self.img_labels = labels
-        self.transform = transform
-        self.target_transform = target_transform
+        if transform == None:
+            self.imgs = imgs
+            self.img_labels = labels
+        else: 
+            self.imgs, self.img_labels = transform(imgs, labels)
 
     def __len__(self):
         return len(self.img_labels)
