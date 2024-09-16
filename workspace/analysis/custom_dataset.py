@@ -1,21 +1,26 @@
 import torch
 from torch.utils.data import Dataset
+import zarr
 
 class ImageDataset(Dataset):
-    def __init__(self, imgs, labels, transform=None):
+    def __init__(self, imgs_path, channel, fold_idx, img_transform=None, label_transform=None):
         super().__init__()
-        if transform == None:
-            self.imgs = imgs
-            self.img_labels = labels
-        else: 
-            self.imgs, self.img_labels = transform(imgs, labels)
-
+        self.imgs_zarr = zarr.open(imgs_path)
+        self.channel = channel
+        self.fold_idx = fold_idx
+        self.img_transform = img_transform
+        self.label_transform = label_transform
     def __len__(self):
-        return len(self.img_labels)
+        return len(self.fold_idx)
 
-    def __getitem__(self, idx): 
-        return self.imgs[idx,:,:], self.img_labels[idx]
-
+    def __getitem__(self, idx):
+        imgs = self.imgs_zarr["imgs"].oindex[self.fold_idx[idx], self.channel]
+        labels = self.imgs_zarr["labels"].oindex[self.fold_idx[idx]]
+        if self.img_transform is not None:
+            imgs = self.img_transform(imgs)
+        if self.label_transform is not None:
+            labels = self.label_transform(labels)
+        return imgs, labels
 
 class RowDataset(Dataset):
     def __init__(self, row, labels, transform=None, target_transform=None):
