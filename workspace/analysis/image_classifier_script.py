@@ -41,7 +41,7 @@ import lightning as L
 from parallel_training import run_train
 import conv_model
 import custom_dataset
-from lightning_parallel_training import LightningModel
+from lightning_parallel_training import LightningModel, LightningModelV2, LightningModelV3
 from lightning.pytorch import Trainer, seed_everything
 from lightning.pytorch import loggers as pl_loggers
 from lightning.pytorch.callbacks import ModelCheckpoint
@@ -203,7 +203,7 @@ transform_train = v2.RandomApply([v2.RandomVerticalFlip(p=0.5),
                                  p=1)
 
 fold_L = np.arange(5)
-channel = ["AGP"] # "DNA"]
+channel = ["AGP", "DNA", "ER"]#, "Mito", "RNA"]
 channel.sort()
 map_channel = {ch: i for i, ch in enumerate(["AGP", "DNA", "ER", "Mito", "RNA"])}
 id_channel = np.array([map_channel[ch] for ch in channel])
@@ -339,6 +339,7 @@ dataset_fold = {i: {"train": custom_dataset.ImageDataset(imgs_path,
 
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+os.environ["NCCL_P2P_DISABLE"] = "1"
 # # Lightning Training
 fold = 0
 tb_logger = pl_loggers.TensorBoardLogger(save_dir=Path("logs"), name="VGG_image_AGP_DNA_ER")
@@ -360,14 +361,14 @@ seed_everything(42, workers=True)
 #                            max_epoch=1,
 #                            n_class=7)
 
-max_epoch = 1
-lit_model = LightningModel(conv_model.VGG_ch,
+max_epoch = 80
+lit_model = LightningModelV2(conv_model.VGG_ch,
                            model_param=(len(channel), #img_depth
                                         485, #img_size
                                         7, #lab_dim
                                         32, #conv_n_ch
                                         6, #n_conv_block
-                                        [1, 1, 2, 2, 3, 3], #n_conv_list
+                                       [1, 1, 2, 2, 3, 3], #n_conv_list
                                         3, #n_lin_block
                                         0.2), #p_dropout
                            lr=5e-4,
@@ -378,14 +379,14 @@ lit_model = LightningModel(conv_model.VGG_ch,
 trainer = L.Trainer(#default_root_dir="./lightning_checkpoint_log/",
                     accelerator="gpu",
                     devices=2,
-                    strategy="ddp",
+                    strategy="ddp_notebook",
                     max_epochs=max_epoch,
                     logger=tb_logger,
                     #profiler="simple",
                     num_sanity_val_steps=0, #to use only if you know the trainer is working !
                     callbacks=[checkpoint_callback],
                     #enable_checkpointing=False,
-                    enable_progress_bar=True
+                    enable_progress_bar=False
                     )
 
 import resource

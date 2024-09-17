@@ -126,6 +126,8 @@ class LightningModelV2(L.LightningModule):
         self.val_rocauc = MulticlassAUROC(num_classes=self.n_class, average="macro")
         self.train_f1 = MulticlassF1Score(num_classes=self.n_class, average="macro")
         self.val_f1 = MulticlassF1Score(num_classes=self.n_class, average="macro")
+        self.train_confmat = MulticlassConfusionMatrix(num_classes=self.n_class, normalize="true")
+        self.val_confmat = MulticlassConfusionMatrix(num_classes=self.n_class, normalize="true")
 
     def training_step(self, batch, batch_idx):
         inputs, target = batch
@@ -140,6 +142,8 @@ class LightningModelV2(L.LightningModule):
         self.train_accuracy.update(output, target)
         self.train_rocauc.update(output, target)
         self.train_f1.update(output, target)
+        if (self.current_epoch % 10 == 0 and self.current_epoch > 0) or (self.current_epoch == self.max_epoch - 1):
+            self.train_confmat.update(output, target)
 
         # Log the loss
         self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
@@ -159,6 +163,8 @@ class LightningModelV2(L.LightningModule):
         self.val_accuracy.update(output, target)
         self.val_rocauc.update(output, target)
         self.val_f1.update(output, target)
+        if (self.current_epoch % 10 == 0 and self.current_epoch > 0) or (self.current_epoch == self.max_epoch - 1):
+            self.val_confmat.update(output, target)
 
         # Log the loss
         self.log("val_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
@@ -167,31 +173,134 @@ class LightningModelV2(L.LightningModule):
 
     def on_train_epoch_end(self):
         # Log the metric objects (this computes the final value)
-        self.log("train_acc", self.train_accuracy, on_epoch=True, sync_dist=True)
-        self.log("train_roc", self.train_rocauc, on_epoch=True, sync_dist=True)
-        self.log("train_f1", self.train_f1, on_epoch=True, sync_dist=True)
+        self.log("train_acc", self.train_accuracy.compute(), on_epoch=True, sync_dist=True)
+        self.log("train_roc", self.train_rocauc.compute(), on_epoch=True, sync_dist=True)
+        self.log("train_f1", self.train_f1.compute(), on_epoch=True, sync_dist=True)
 
         # Reset metrics for the next epoch
         self.train_accuracy.reset()
         self.train_rocauc.reset()
         self.train_f1.reset()
 
+        if (self.current_epoch % 10 == 0 and self.current_epoch > 0) or (self.current_epoch == self.max_epoch - 1):
+            fig_, ax_ = self.train_confmat.plot()
+            if self.trainer.is_global_zero:
+                self.logger.experiment.add_figure("train_confmat", fig_, self.current_epoch)
+            plt.close(fig_)
+            self.train_confmat.reset()
+
     def on_validation_epoch_end(self):
         # Log the metric objects (this computes the final value)
-        self.log("val_acc", self.val_accuracy, on_epoch=True, sync_dist=True)
-        self.log("val_roc", self.val_rocauc, on_epoch=True, sync_dist=True)
-        self.log("val_f1", self.val_f1, on_epoch=True, sync_dist=True)
+        self.log("val_acc", self.val_accuracy.compute(), on_epoch=True, sync_dist=True)
+        self.log("val_roc", self.val_rocauc.compute(), on_epoch=True, sync_dist=True)
+        self.log("val_f1", self.val_f1.compute(), on_epoch=True, sync_dist=True)
 
         # Reset metrics for the next epoch
         self.val_accuracy.reset()
         self.val_rocauc.reset()
         self.val_f1.reset()
 
+        if (self.current_epoch % 10 == 0 and self.current_epoch > 0) or (self.current_epoch == self.max_epoch - 1):
+            fig_, ax_ = self.val_confmat.plot()
+            if self.trainer.is_global_zero:
+                self.logger.experiment.add_figure("val_confmat", fig_, self.current_epoch)
+            plt.close(fig_)
+            self.val_confmat.reset()
+
     def configure_optimizers(self):
         optimizer = optim.Adam(self.parameters(), lr=self.lr, weight_decay=self.weight_decay)
         return optimizer
 
 
+
+class LightningModelV3(L.LightningModule):
+    def __init__(self, model, model_param, lr, weight_decay, max_epoch, n_class, apply_softmax=True):
+        super().__init__()
+        self.model = model(*model_param)
+        self.lr = lr
+        self.weight_decay = weight_decay
+        self.max_epoch = max_epoch
+        self.n_class = n_class
+        self.apply_softmax = apply_softmax
+        self.save_hyperparameters(ignore="model")
+        self.training_step_outputs = []
+        self.validation_step_outputs = []
+        self.accuracy = nn.ModuleList([MulticlassAccuracy(num_classes=self.n_class, average="macro") for _ in range(2)])
+        self.rocauc = nn.ModuleList([MulticlassAUROC(num_classes=self.n_class, average="macro") for _ in range(2)])
+        self.f1 = nn.ModuleList([MulticlassF1Score(num_classes=self.n_class, average="macro") for _ in range(2)])
+        self.prefix_to_id = {"train": 0, "val": 1}
+
+    def training_step(self, batch, batch_idx):
+        # training_step defines the train loop.
+        # it is independent of forward
+        inputs, target = batch
+        output = self.model(inputs)
+        loss = cross_entropy(output, target)
+        #save output
+        self.training_step_outputs.append((output, target))
+
+        # logs metrics for each training_step,
+        # and the average across the epoch, to the progress bar and logger
+        if self.trainer.is_global_zero:
+            self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True,
+                     rank_zero_only=True,
+                     sync_dist=True) #do Ihave to use global_zero and sync dist?
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+        inputs, target = batch
+        output = self.model(inputs)
+        loss = cross_entropy(output, target)
+        self.validation_step_outputs.append((output, target))
+
+        if self.trainer.is_global_zero:
+            self.log("val_loss", loss, on_step=True, on_epoch=True, prog_bar=True,
+                     logger=True,
+                     rank_zero_only=True,
+                     sync_dist=True) #do Ihave to use global_zero and sync dist?
+
+
+    def configure_optimizers(self):
+        optimizer = optim.Adam(self.parameters(), lr=self.lr, weight_decay=self.weight_decay)
+        return optimizer
+
+    def on_train_epoch_end(self):
+        prefix = "train"
+        self._shared_eval(self.training_step_outputs, prefix)
+        self.training_step_outputs.clear() # free memory
+        self.training_step_outputs = []
+        self.accuracy[self.prefix_to_id[prefix]].reset()
+        self.rocauc[self.prefix_to_id[prefix]].reset()
+        self.f1[self.prefix_to_id[prefix]].reset()
+
+
+    def on_validation_epoch_end(self):
+        prefix = "val"
+        self._shared_eval(self.validation_step_outputs, prefix)
+        self.validation_step_outputs.clear()  # free memory
+        self.validation_step_outputs = []
+        self.accuracy[self.prefix_to_id[prefix]].reset()
+        self.rocauc[self.prefix_to_id[prefix]].reset()
+        self.f1[self.prefix_to_id[prefix]].reset()
+
+    def _shared_eval(self, prefix_step_outputs, prefix):
+        all_preds, all_labels = map(lambda x: list(x), unzip(prefix_step_outputs))
+        (all_preds, all_labels) = (self.all_gather(torch.vstack(all_preds)).view(-1, self.n_class),
+                                   self.all_gather(torch.hstack(all_labels)).view(-1))
+
+        if self.apply_softmax:
+            all_preds = nn.Softmax(dim=1)(all_preds)
+
+        if self.trainer.is_global_zero:
+            self.log(prefix + "_" + "acc", self.accuracy[self.prefix_to_id[prefix]](all_preds, all_labels),
+                     rank_zero_only=True,
+                     sync_dist=True)
+            self.log(prefix + "_" + "roc", self.rocauc[self.prefix_to_id[prefix]](all_preds, all_labels),
+                     rank_zero_only=True,
+                     sync_dist=True)
+            self.log(prefix + "_" + "f1", self.f1[self.prefix_to_id[prefix]](all_preds, all_labels),
+                     rank_zero_only=True,
+                     sync_dist=True)
 
     
 class LightningGAN(L.LightningModule):
