@@ -142,7 +142,7 @@ class LightningModelV2(L.LightningModule):
         self.train_accuracy.update(output, target)
         self.train_rocauc.update(output, target)
         self.train_f1.update(output, target)
-        if (self.current_epoch % 10 == 0 and self.current_epoch > 0) or (self.current_epoch == self.max_epoch - 1):
+        if (self.current_epoch % 5 == 0 and self.current_epoch > 0) or (self.current_epoch == self.max_epoch - 1):
             self.train_confmat.update(output, target)
 
         # Log the loss
@@ -163,7 +163,7 @@ class LightningModelV2(L.LightningModule):
         self.val_accuracy.update(output, target)
         self.val_rocauc.update(output, target)
         self.val_f1.update(output, target)
-        if (self.current_epoch % 10 == 0 and self.current_epoch > 0) or (self.current_epoch == self.max_epoch - 1):
+        if (self.current_epoch % 5 == 0 and self.current_epoch > 0) or (self.current_epoch == self.max_epoch - 1):
             self.val_confmat.update(output, target)
 
         # Log the loss
@@ -182,7 +182,7 @@ class LightningModelV2(L.LightningModule):
         self.train_rocauc.reset()
         self.train_f1.reset()
 
-        if (self.current_epoch % 10 == 0 and self.current_epoch > 0) or (self.current_epoch == self.max_epoch - 1):
+        if (self.current_epoch % 5 == 0 and self.current_epoch > 0) or (self.current_epoch == self.max_epoch - 1):
             fig_, ax_ = self.train_confmat.plot()
             if self.trainer.is_global_zero:
                 self.logger.experiment.add_figure("train_confmat", fig_, self.current_epoch)
@@ -200,7 +200,7 @@ class LightningModelV2(L.LightningModule):
         self.val_rocauc.reset()
         self.val_f1.reset()
 
-        if (self.current_epoch % 10 == 0 and self.current_epoch > 0) or (self.current_epoch == self.max_epoch - 1):
+        if (self.current_epoch % 5 == 0 and self.current_epoch > 0) or (self.current_epoch == self.max_epoch - 1):
             fig_, ax_ = self.val_confmat.plot()
             if self.trainer.is_global_zero:
                 self.logger.experiment.add_figure("val_confmat", fig_, self.current_epoch)
