@@ -48,20 +48,25 @@ class StratifiedGroupKFold_custom:
         moa_single = {k: moa_group.pop(k)[0] for k in list(moa_group.keys()) if len(moa_group[k]) == 1}
 
         #For each moa composed of several InChIKey:
-        #we select for every fols one moa to put in the test set. We make sure that every 
-        #InChIkey is used at least one in a fold.
+        #we select for every folds one InChIKey to put in the test set. We make sure that every 
+        #InChIkey is used at least once in a test fold.
         rng = np.random.default_rng(self.random_state)
         select_moa_group = {k: np.hstack([rng.choice(np.arange(len(moa_group[k])), size=len(moa_group[k]), replace=False) 
                   for _ in range(int(np.ceil(self.n_splits / len(moa_group[k]))))])[:self.n_splits] 
                             for k in list(moa_group.keys())}
 
-        #For every InChiKey, compute the result proportion of the moa put in the test set. Then average this for every 
+        #For every InChIKey, compute the result proportion of the moa put in the test set. Then average this for every 
         #class and then for every fold. The inverse of this number is the number of chunk that should be made 
         #from the list of indice for every moa_single
-        n_split_moa_single = int(np.ceil(1 / np.mean([np.mean(np.hstack(
+        numb = 1 / np.mean([np.mean(np.hstack(
             [index[groups == moa_group[k][select_moa_group[k]][n]].shape[0] / index[y == k].shape[0] 
-                                    for k in list(moa_group.keys())])) for n in range(self.n_splits)])))
-        
+                                    for k in list(moa_group.keys())])) for n in range(self.n_splits)])
+
+        # we round to the nearest int. In case we have .5 float, round will round to the nearest even int which 
+        # is difficult to predict a consistent behaviour. Instead, we prefer to go at the disadvantage of the classifier
+        # and put more into the test set. Then nearest int and in case of .5 nearest from 0. 
+        n_split_moa_single = np.round(numb) + ((np.floor(numb) % 2 == 0) & ((numb - np.floor(numb)) == 0.5))
+
         #Fetch the indice for every moa put in the test set and stack them. Do that for every fold
         index_test_moa_group = [np.hstack([index[groups == moa_group[k][select_moa_group[k]][n]] 
                                            for k in list(moa_group.keys())]) for n in range(self.n_splits)]
