@@ -24,12 +24,10 @@ from sklearn.pipeline import Pipeline
 from sklearn.metrics import roc_auc_score, f1_score, accuracy_score, confusion_matrix
 from xgboost import XGBClassifier
 
-from features_engineering import features_drop_corr
-from features_engineering import features_drop_corr_gpu
+from Data_filtering.features_engineering import features_drop_corr
+from Data_filtering.features_engineering import features_drop_corr_gpu
 
 from data_split import StratifiedGroupKFold_custom
-
-
 
 import torch
 import torch.nn as nn 
@@ -38,7 +36,7 @@ from torch.optim import Adam
 from torch.nn import CrossEntropyLoss
 
 import lightning as L
-from lightning_parallel_training import LightningModel, LightningGAN
+from lightning_parallel_training import LightningModelV2, LightningGAN
 
 from lightning.pytorch import Trainer, seed_everything
 from lightning.pytorch import loggers as pl_loggers
@@ -56,16 +54,12 @@ resource.setrlimit(resource.RLIMIT_NOFILE, (hard, hard))
 
 #Loading of the data
 
-metadata_df = pd.read_csv("target2_eq_moa2_metadata", index_col="ID")
-features_df = pd.read_csv("target2_eq_moa2_features", index_col="ID")
-nan_col = features_df.columns[features_df.isna().sum(axis=0) > 0]
-nan_col, len(nan_col)
-inf_col = features_df.columns[(features_df == np.inf).sum(axis=0) > 0]
-inf_col, len(inf_col)
-features_df = features_df[features_df.columns[(features_df.isna().sum(axis=0) == 0) & 
+metadata_df = pd.read_csv("target2_eq_moa2_active_metadata", index_col="ID")
+features_df = pd.read_csv("target2_eq_moa2_active_features", index_col="ID")
+features_df = features_df[features_df.columns[(features_df.isna().sum(axis=0) == 0) &
                                               ((features_df == np.inf).sum(axis=0) == 0) &
                                               (features_df.std() != 0)]]
-metadata_df = metadata_df.assign(moa_id=LabelEncoder().fit_transform(metadata_df["moa"]))
+#metadata_df = metadata_df.assign(moa_id=LabelEncoder().fit_transform(metadata_df["moa"]))
 features_df = features_df.sort_index().reset_index(drop=True)
 metadata_df = metadata_df.sort_index().reset_index()
 
@@ -85,13 +79,13 @@ for i in range(len(kfold)):
     dataset_fold[i]["train"] = custom_dataset.RowDataset(torch.tensor(scaler.transform(X[kfold[i][0]]), dtype=torch.float), y[kfold[i][0]])
     dataset_fold[i]["test"] = custom_dataset.RowDataset(torch.tensor(scaler.transform(X[kfold[i][1]]), dtype=torch.float), y[kfold[i][1]])
 
-"""
+
 # # 2 Deep Learning model
-fold=4
+fold=0
 # # Lightning Training
-tb_logger = pl_loggers.TensorBoardLogger(save_dir=Path("logs"), name="SimpleNN_profiles")
+tb_logger = pl_loggers.TensorBoardLogger(save_dir=Path("logs"), name="SimpleNN_profiles_active")
 checkpoint_callback = ModelCheckpoint(dirpath=Path("lightning_checkpoint_log"),
-                                      filename=f"SimpleNN_profiles_fold_{fold}_RobustScaler_"+"{epoch}-{train_acc:.2f}-{val_acc:.2f}",
+                                      filename=f"SimpleNN_profiles_active_fold_{fold}_RobustScaler_"+"{epoch}-{train_acc:.2f}-{val_acc:.2f}",
                                       save_top_k=1,
                                       monitor="val_acc",
                                       mode="max",
@@ -100,17 +94,17 @@ checkpoint_callback = ModelCheckpoint(dirpath=Path("lightning_checkpoint_log"),
 torch.set_float32_matmul_precision('medium') #try 'high')
 seed_everything(42, workers=True)
 
-max_epoch=1000
-lit_model = LightningModel(conv_model.SimpleNN,
-                           model_param=(3650,#input_size
-                                        7,#num_classes
+max_epoch=10
+lit_model = LightningModelV2(conv_model.SimpleNN,
+                           model_param=(3645,#input_size
+                                        4,#num_classes
                                         [2048, 2048],#hidden_layer_L
                                         [0.4, 0.2]#p_dopout_L
                                         ),
                            lr=1e-4,
                            weight_decay=1e-1,
                            max_epoch=max_epoch,
-                           n_class=7,
+                           n_class=4,
                            apply_softmax=False)
 
 trainer = L.Trainer(
