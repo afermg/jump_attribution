@@ -41,7 +41,7 @@ import lightning as L
 from parallel_training import run_train
 import conv_model
 import custom_dataset
-from lightning_parallel_training import LightningModel, LightningModelV2, LightningModelV3
+from lightning_parallel_training import LightningModelV2, LightningGANV2
 from lightning.pytorch import Trainer, seed_everything
 from lightning.pytorch import loggers as pl_loggers
 from lightning.pytorch.callbacks import ModelCheckpoint
@@ -55,7 +55,7 @@ from pathlib import Path
 # In[2]:
 
 file_directory = Path("/home/hhakem/projects/counterfactuals_projects/workspace/analysis/figures")
-metadata_pre = pl.read_csv("target2_eq_moa2_metadata")
+metadata_pre = pl.read_csv("target2_eq_moa2_active_metadata")
 
 
 def try_function(f: Callable):
@@ -114,7 +114,7 @@ def get_jump_image_iter(metadata: pl.DataFrame, channel: List[str],
                                         "img"])
     return features, work_fail
 
-if not os.path.exists(Path("image_dataset/imgs_labels_groups.zarr")):
+if not os.path.exists(Path("image_active_dataset/imgs_labels_groups.zarr")):
     channel = ['AGP', 'DNA', 'ER', 'Mito', 'RNA']
     features_pre, work_fail = get_jump_image_iter(metadata_pre.select(pl.col(["Metadata_Source", "Metadata_Batch",
                                                                               "Metadata_Plate", "Metadata_Well"])),
@@ -148,9 +148,9 @@ if not os.path.exists(Path("image_dataset/imgs_labels_groups.zarr")):
         return x[h_off:des_size+h_off,w_off:des_size+w_off]
 
 
-    shape_image = list(map(lambda x: x.shape, features["img"].to_list()))
-    shape_image.sort(key=lambda x:x[0])
-    img_crop = list(map(lambda x: crop_square_array(x, shape_image[0][0]), features["img"].to_list()))
+    # shape_image = list(map(lambda x: x.shape, features["img"].to_list()))
+    # shape_image.sort(key=lambda x:x[0])
+    img_crop = list(map(lambda x: crop_square_array(x, des_size=896), features["img"].to_list())) #shape_image[0][0]
     img_stack = np.array([np.stack([item[1] for item in tostack])
                  for idx, tostack in groupby(zip(features["ID"].to_list(), img_crop), key=lambda x: x[0])])
 
@@ -165,6 +165,7 @@ if not os.path.exists(Path("image_dataset/imgs_labels_groups.zarr")):
     clip_image = np.clip(img_stack,
                          min_clip_img,
                          max_clip_img)
+    clip_image = (clip_image - min_clip_img) / (max_clip_img - min_clip_img)
 
     # ## d) Split image in 4
     def slice_image(img, labels, groups):
@@ -178,8 +179,8 @@ if not os.path.exists(Path("image_dataset/imgs_labels_groups.zarr")):
         return small_image, small_labels, small_groups
     small_image, small_labels, small_groups = slice_image(clip_image, labels, groups)
 
-    store = zarr.DirectoryStore(Path("image_dataset/imgs_labels_groups.zarr"))
-    root = zarr.group(store=store, )
+    store = zarr.DirectoryStore(Path("image_active_dataset/imgs_labels_groups.zarr"))
+    root = zarr.group(store=store)
     # Save datasets into the group
     root.create_dataset('imgs', data=small_image, overwrite=True, chunks=(1, 1, *small_image.shape[2:]))
     root.create_dataset('labels', data=small_labels, overwrite=True, chunks=1)
@@ -187,7 +188,7 @@ if not os.path.exists(Path("image_dataset/imgs_labels_groups.zarr")):
 
 
 # ## e) Create the pytorch dataset with respect to kfold split with train val and test set
-image_dataset = zarr.open(Path("image_dataset/imgs_labels_groups.zarr"))
+image_dataset = zarr.open(Path("image_active_dataset/imgs_labels_groups.zarr"))
 kfold_train_test = list(StratifiedGroupKFold_custom(random_state=42).split(None, image_dataset["labels"][:], image_dataset["groups"][:]))
 kfold_train_val_test = list(starmap(lambda train, val_test: (train,
                                                              *list(starmap(lambda val, test: (val_test[val], val_test[test]),
@@ -203,11 +204,11 @@ transform_train = v2.RandomApply([v2.RandomVerticalFlip(p=0.5),
                                  p=1)
 
 fold_L = np.arange(5)
-channel = ["AGP", "DNA", "ER"]#, "Mito", "RNA"]
+channel = ["AGP","DNA", "ER"]#, "Mito"]#, "RNA"]
 channel.sort()
 map_channel = {ch: i for i, ch in enumerate(["AGP", "DNA", "ER", "Mito", "RNA"])}
 id_channel = np.array([map_channel[ch] for ch in channel])
-imgs_path = Path("image_dataset/imgs_labels_groups.zarr")
+imgs_path = Path("image_active_dataset/imgs_labels_groups.zarr")
 dataset_fold = {i: {"train": custom_dataset.ImageDataset(imgs_path,
                                                          channel=id_channel,
                                                          fold_idx=kfold_train_val_test[i][0],
@@ -337,61 +338,149 @@ dataset_fold = {i: {"train": custom_dataset.ImageDataset(imgs_path,
 
 
 
+# os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+# os.environ["NCCL_P2P_DISABLE"] = "1"
+# # # Lightning Training
+# fold = 0
+# tb_logger = pl_loggers.TensorBoardLogger(save_dir=Path("logs"), name="VGG_image_active")
+# checkpoint_callback = ModelCheckpoint(dirpath=Path("lightning_checkpoint_log"),
+#                                       filename=f"VGG_image_active_fold_{fold}"+"{epoch}-{train_acc:.2f}-{val_acc:.2f}",
+#                                       save_top_k=1,
+#                                       monitor="val_acc",
+#                                       mode="max",
+#                                       every_n_epochs=2)
+
+# torch.set_float32_matmul_precision('medium') #try 'high')
+# seed_everything(42, workers=True)
+# # lit_model = LightningModel(conv_model.VGG,
+# #                            model_param=(1, #img_depth
+# #                                         485, #img_size
+# #                                         7, #lab_dim
+# #                                         5, #n_conv_block
+# #                                         [1, 1, 1, 1, 1], #n_conv_list
+# #                                         3),
+# #                            lr=5e-4,
+# #                            weight_decay=5e-3,
+# #                            max_epoch=1,
+# #                            n_class=7)
+
+# max_epoch = 80
+# lit_model = LightningModelV2(conv_model.VGG_ch,
+#                            model_param=(len(channel), #img_depth
+#                                         448, #img_size
+#                                         4, #lab_dim
+#                                         32, #conv_n_ch
+#                                         6, #n_conv_block
+#                                        [1, 1, 2, 2, 3, 3], #n_conv_list
+#                                         3, #n_lin_block
+#                                         0.2), #p_dropout
+#                            lr=5e-4,
+#                            weight_decay=0,
+#                            max_epoch=max_epoch,
+#                              n_class=4)
+
+# trainer = L.Trainer(#default_root_dir="./lightning_checkpoint_log/",
+#                     accelerator="gpu",
+#                     devices=2,
+#                     strategy="ddp_notebook",
+#                     max_epochs=max_epoch,
+#                     logger=tb_logger,
+#                     #profiler="simple",
+#                     num_sanity_val_steps=0, #to use only if you know the trainer is working !
+#                     callbacks=[checkpoint_callback],
+#                     #enable_checkpointing=False,
+#                     enable_progress_bar=False
+#                     )
+
+# import resource
+# soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+# resource.setrlimit(resource.RLIMIT_NOFILE, (hard, hard))
+
+# trainer.fit(lit_model, DataLoader(dataset_fold[0]["train"], batch_size=128, num_workers=1, shuffle=True, persistent_workers=True),
+#             DataLoader(dataset_fold[0]["val"], batch_size=128, num_workers=1, persistent_workers=True))
+
+
+
+
+
+'''
+GANs Training
+'''
+
+unet = conv_model.UNet(**{"depth":6, "in_channels":7, "out_channels":3, "final_activation": nn.Sigmoid(),
+     "num_fmaps":64, "fmap_inc_factor":2, "downsample_factor":2, "kernel_size":3, "padding":"same",
+     "upsample_mode":"nearest", "ndim":2})
+
+generator_ema_weight = list(unet.state_dict().values())
+beta_moving_avg = 0.9
+
+def exponential_moving_average(model):
+    """Update the EMA model's parameters with an exponential moving average"""
+    for param, ema_param in zip(model.parameters(), generator_ema_weight):
+        # in place modif of ema_param with : ema_param * 0.999 + 0.001 * param
+        ema_param.data.mul_(beta_moving_avg).add_((1 - beta_moving_avg) * param.data.cpu())
+
+def copy_parameters_from_ema(target_model):
+    """Copy the parameters of a model to another model"""
+    for param, target_param in zip(generator_ema_weight, target_model.parameters()):
+        target_param.data.copy_(param.data)
+
+
+
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 os.environ["NCCL_P2P_DISABLE"] = "1"
+fold=0
 # # Lightning Training
-fold = 0
-tb_logger = pl_loggers.TensorBoardLogger(save_dir=Path("logs"), name="VGG_image_AGP_DNA_ER")
+tb_logger = pl_loggers.TensorBoardLogger(save_dir=Path("logs"), name="GAN_image_active")
 checkpoint_callback = ModelCheckpoint(dirpath=Path("lightning_checkpoint_log"),
-                                      filename=f"VGG_image_AGP_DNA_ER_fold_{fold}"+"{epoch}-{train_acc:.2f}-{val_acc:.2f}",
-                                      every_n_epochs=10)
+                                      filename=f"GAN_image_active_fold_{fold}_"+"{epoch}-{train_acc_true:.2f}-{train_acc_fake:.2f}",
+                                      #save_top_k=1,
+                                      #monitor="val_acc",
+                                      #mode="max",
+                                      every_n_epochs=2)
 
 torch.set_float32_matmul_precision('medium') #try 'high')
 seed_everything(42, workers=True)
-# lit_model = LightningModel(conv_model.VGG,
-#                            model_param=(1, #img_depth
-#                                         485, #img_size
-#                                         7, #lab_dim
-#                                         5, #n_conv_block
-#                                         [1, 1, 1, 1, 1], #n_conv_list
-#                                         3),
-#                            lr=5e-4,
-#                            weight_decay=5e-3,
-#                            max_epoch=1,
-#                            n_class=7)
 
-max_epoch = 80
-lit_model = LightningModelV2(conv_model.VGG_ch,
-                           model_param=(len(channel), #img_depth
-                                        485, #img_size
-                                        7, #lab_dim
-                                        32, #conv_n_ch
-                                        6, #n_conv_block
-                                       [1, 1, 2, 2, 3, 3], #n_conv_list
-                                        3, #n_lin_block
-                                        0.2), #p_dropout
-                           lr=5e-4,
-                           weight_decay=0,
-                           max_epoch=max_epoch,
-                           n_class=7)
+max_epoch = 1
+lit_model = LightningGANV2(
+    conv_model.UNet, # inner_generator,
+    conv_model.VGG_ch, # style_encoder,
+    conv_model.ImgGenerator, # generator,
+    conv_model.VGG_ch, # discriminator,
+    {"depth":6, "in_channels":7, "out_channels":3, "final_activation": nn.Sigmoid(),
+     "num_fmaps":64, "fmap_inc_factor":2, "downsample_factor":2, "kernel_size":3, "padding":"same",
+     "upsample_mode":"nearest", "ndim":2}, # inner_generator_param,
+    {"img_depth":len(channel), "img_size":448, "lab_dim":4, "conv_n_ch":32,
+     "n_conv_block":6, "n_conv_list":[1, 1, 2, 2, 3, 3, 3], "n_lin_block":3, "p_dropout":0.2}, # style_encoder_param,
+    {"batchnorm_dim": 0}, #generator_param,
+    {"img_depth":len(channel), "img_size":448, "lab_dim":4, "conv_n_ch":32,
+     "n_conv_block":6, "n_conv_list":[1, 1, 2, 2, 3, 3], "n_lin_block":3, "p_dropout":0.2}, # discriminator_param,
+    {"lr": 1e-4}, # adam_param_g,
+    {"lr": 1e-5}, # adam_param_d,
+    0.8, # beta_moving_avg,
+    4, #n_class
+    False, # if_reshape_vector=False,
+    None, # H_target_shape=None
+    True) # apply_softmax=False
 
-trainer = L.Trainer(#default_root_dir="./lightning_checkpoint_log/",
+batch_size = 8 #len(dataset_fold[fold]["train"])
+
+trainer = L.Trainer(
                     accelerator="gpu",
-                    devices=2,
-                    strategy="ddp_notebook",
+                    devices=1,
+                    #precision=16,
+                    #strategy="ddp_find_unused_parameters_true"
                     max_epochs=max_epoch,
                     logger=tb_logger,
-                    #profiler="simple",
-                    num_sanity_val_steps=0, #to use only if you know the trainer is working !
+                    #num_sanity_val_steps=0, #to use only if you know the trainer is working !
                     callbacks=[checkpoint_callback],
                     #enable_checkpointing=False,
-                    enable_progress_bar=False
+                    enable_progress_bar=False,
+                    #profiler="simple"
                     )
 
-import resource
-soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
-resource.setrlimit(resource.RLIMIT_NOFILE, (hard, hard))
-
-trainer.fit(lit_model, DataLoader(dataset_fold[0]["train"], batch_size=128, num_workers=1, shuffle=True, persistent_workers=True),
-            DataLoader(dataset_fold[0]["val"], batch_size=128, num_workers=1, persistent_workers=True))
+trainer.fit(lit_model, DataLoader(dataset_fold[fold]["train"], batch_size=batch_size,
+                                  num_workers=1, persistent_workers=True))#,
+                                  #shuffle=True))
