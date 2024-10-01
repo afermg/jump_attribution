@@ -204,7 +204,6 @@ class CropAndConcat(torch.nn.Module):
         self, encoder_output: torch.Tensor, upsample_output: torch.Tensor
     ) -> torch.Tensor:
         encoder_cropped = self.crop(encoder_output, upsample_output)
-
         return torch.cat([encoder_cropped, upsample_output], dim=1)
 
 
