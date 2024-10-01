@@ -515,7 +515,7 @@ class LightningGANV2(L.LightningModule):
         self.generator = generator(inner_generator(**inner_generator_param), style_encoder(**style_encoder_param),
                                    **generator_param)
         self.discriminator = discriminator(**discriminator_param)
-        self.generator_ema_weight = list(self.generator.state_dict().values())
+        self.generator_ema_weight = list(map(lambda x: x.data.cpu(), self.generator.parameters()))
 
         # Optimizer
         self.adam_param_g = adam_param_g
@@ -531,6 +531,9 @@ class LightningGANV2(L.LightningModule):
         self.train_accuracy_true = MulticlassAccuracy(num_classes=self.n_class, average="macro")
         self.train_accuracy_fake = MulticlassAccuracy(num_classes=self.n_class, average="macro")
         self.apply_softmax = apply_softmax
+        self.cycle_loss_L = []
+        self.adv_loss_L = []
+        self.d_loss_L = []
 
     def cycle_loss(self, x, x_cycle):
         return l1_loss(x, x_cycle)
@@ -543,10 +546,12 @@ class LightningGANV2(L.LightningModule):
         Expect x to have the following dimension 1D: N_features
         """
         return x.reshape(1, self.H_target_shape, -1)
+
 ##### NB, these moving average over parameters and copy of parameters only average weights and bias. It does not take into account
 ##### Batch Normalization layers ! For a more general implementation, maybe it would be interesting to implement this:
 ##### https://github.com/yasinyazici/EMA_GAN/blob/master/common/misc.py#L64
 ##### from the paper THE UNUSUAL EFFECTIVENESS OF AVERAGING IN GAN TRAINING Yasin Yazıcı et al. 2019
+
     def exponential_moving_average(self, model):
         """Update the EMA model's parameters with an exponential moving average"""
         for param, ema_param in zip(model.parameters(), self.generator_ema_weight):
@@ -557,11 +562,12 @@ class LightningGANV2(L.LightningModule):
         """Copy the parameters of a model to another model"""
         for param, target_param in zip(self.generator_ema_weight, target_model.parameters()):
             target_param.data.copy_(param.data)
-#####
+
     def training_step(self, batch, batch_idx):
         x, y = batch
         # Create target and style image
-        random_index = torch.randperm(len(y))
+        batch_size = len(y)
+        random_index = torch.randperm(batch_size)
         x_style = x[random_index].clone()
         y_target = y[random_index].clone()
 
@@ -613,16 +619,16 @@ class LightningGANV2(L.LightningModule):
         optimizer_d.step()
         self.untoggle_optimizer(optimizer_d) #Disable grad
 
-        # Logging every loss.
-        self.log("cycle_loss", cycle_loss, on_epoch=True, logger=True, sync_dist=True)
-        self.log("adv_loss", adv_loss, on_epoch=True, logger=True, sync_dist=True)
-        self.log("d_loss", d_loss, on_epoch=True, logger=True, sync_dist=True)
+        # Store loss for logging later on
+        self.cycle_loss_L.append(cycle_loss * batch_size)
+        self.adv_loss_L.append(adv_loss *  batch_size)
+        self.d_loss_L.append(d_loss * batch_size)
 
-        if batch_idx == 0 and self.trainer.is_global_zero and (self.current_epoch == self.trainer.max_epochs - 1):
-            self.log_images_with_colormap(x, x_style, x_fake, x_cycle, y, y_target, num=4)
+        if batch_idx == 0 and ((self.current_epoch % 2 == 0 and self.current_epoch > 0) or (self.current_epoch == self.trainer.max_epochs - 1)):
+            if self.trainer.is_global_zero:
+                self.log_images_with_colormap(x, x_style, x_fake, x_cycle, y, y_target, num=4)
 
         self.exponential_moving_average(self.generator)
-
 
     def on_train_epoch_end(self):
         self.copy_parameters_from_ema(self.generator)
@@ -630,6 +636,19 @@ class LightningGANV2(L.LightningModule):
         self.log("train_acc_fake", self.train_accuracy_fake.compute(), on_epoch=True, sync_dist=True)
         self.train_accuracy_true.reset()
         self.train_accuracy_fake.reset()
+
+        cycle_loss_epoch = torch.sum(torch.cat(self.all_gather(self.cycle_loss_L), dim=0)) / len(self.trainer.train_dataloader.dataset)
+        adv_loss_epoch = torch.sum(torch.cat(self.all_gather(self.adv_loss_L), dim=0)) / len(self.trainer.train_dataloader.dataset)
+        d_loss_epoch = torch.sum(torch.cat(self.all_gather(self.d_loss_L), dim=0)) / len(self.trainer.train_dataloader.dataset)
+        if self.trainer.is_global_zero:
+            self.log("cycle_loss_epoch", cycle_loss_epoch, logger=True, rank_zero_only=True)
+            self.log("adv_loss_epoch", adv_loss_epoch, logger=True, rank_zero_only=True)
+            self.log("d_loss_epoch", d_loss_epoch, logger=True, rank_zero_only=True)
+        self.cycle_loss_L = []
+        self.adv_loss_L = []
+        self.d_loss_L = []
+        del cycle_loss_epoch, adv_loss_epoch, d_loss_epoch
+
 
     def log_images_with_colormap(self, x, x_style, x_fake, x_cycle, y, y_target, num=4):
         fig, axs = plt.subplots(num, 4, figsize=(15, 20), squeeze=False)
