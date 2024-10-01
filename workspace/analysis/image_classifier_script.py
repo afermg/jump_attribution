@@ -337,6 +337,9 @@ dataset_fold = {i: {"train": custom_dataset.ImageDataset(imgs_path,
 # plt.close()
 
 
+'''
+classifier Training
+'''
 
 # os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 # os.environ["NCCL_P2P_DISABLE"] = "1"
@@ -352,31 +355,21 @@ dataset_fold = {i: {"train": custom_dataset.ImageDataset(imgs_path,
 
 # torch.set_float32_matmul_precision('medium') #try 'high')
 # seed_everything(42, workers=True)
-# # lit_model = LightningModel(conv_model.VGG,
-# #                            model_param=(1, #img_depth
-# #                                         485, #img_size
-# #                                         7, #lab_dim
-# #                                         5, #n_conv_block
-# #                                         [1, 1, 1, 1, 1], #n_conv_list
-# #                                         3),
-# #                            lr=5e-4,
-# #                            weight_decay=5e-3,
-# #                            max_epoch=1,
-# #                            n_class=7)
+
 
 # max_epoch = 80
 # lit_model = LightningModelV2(conv_model.VGG_ch,
-#                            model_param=(len(channel), #img_depth
-#                                         448, #img_size
-#                                         4, #lab_dim
-#                                         32, #conv_n_ch
-#                                         6, #n_conv_block
-#                                        [1, 1, 2, 2, 3, 3], #n_conv_list
-#                                         3, #n_lin_block
-#                                         0.2), #p_dropout
-#                            lr=5e-4,
-#                            weight_decay=0,
-#                            max_epoch=max_epoch,
+#                              model_param=(len(channel), #img_depth
+#                                          448, #img_size
+#                                          4, #lab_dim
+#                                          16, #conv_n_ch 32
+#                                          7, #n_conv_block 6
+#                                          [1, 1, 2, 2, 3, 3, 3], #n_conv_list
+#                                          3, #n_lin_block
+#                                          0.2), #p_dropout
+#                              lr=5e-4,
+#                              weight_decay=0,
+#                              max_epoch=max_epoch,
 #                              n_class=4)
 
 # trainer = L.Trainer(#default_root_dir="./lightning_checkpoint_log/",
@@ -407,29 +400,10 @@ dataset_fold = {i: {"train": custom_dataset.ImageDataset(imgs_path,
 GANs Training
 '''
 
-unet = conv_model.UNet(**{"depth":6, "in_channels":7, "out_channels":3, "final_activation": nn.Sigmoid(),
-     "num_fmaps":64, "fmap_inc_factor":2, "downsample_factor":2, "kernel_size":3, "padding":"same",
-     "upsample_mode":"nearest", "ndim":2})
-
-generator_ema_weight = list(unet.state_dict().values())
-beta_moving_avg = 0.9
-
-def exponential_moving_average(model):
-    """Update the EMA model's parameters with an exponential moving average"""
-    for param, ema_param in zip(model.parameters(), generator_ema_weight):
-        # in place modif of ema_param with : ema_param * 0.999 + 0.001 * param
-        ema_param.data.mul_(beta_moving_avg).add_((1 - beta_moving_avg) * param.data.cpu())
-
-def copy_parameters_from_ema(target_model):
-    """Copy the parameters of a model to another model"""
-    for param, target_param in zip(generator_ema_weight, target_model.parameters()):
-        target_param.data.copy_(param.data)
-
-
-
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 os.environ["NCCL_P2P_DISABLE"] = "1"
+
 fold=0
 # # Lightning Training
 tb_logger = pl_loggers.TensorBoardLogger(save_dir=Path("logs"), name="GAN_image_active")
@@ -443,20 +417,20 @@ checkpoint_callback = ModelCheckpoint(dirpath=Path("lightning_checkpoint_log"),
 torch.set_float32_matmul_precision('medium') #try 'high')
 seed_everything(42, workers=True)
 
-max_epoch = 1
+max_epoch = 30
 lit_model = LightningGANV2(
     conv_model.UNet, # inner_generator,
     conv_model.VGG_ch, # style_encoder,
     conv_model.ImgGenerator, # generator,
     conv_model.VGG_ch, # discriminator,
-    {"depth":6, "in_channels":7, "out_channels":3, "final_activation": nn.Sigmoid(),
-     "num_fmaps":64, "fmap_inc_factor":2, "downsample_factor":2, "kernel_size":3, "padding":"same",
+    {"depth":5, "in_channels":7, "out_channels":3, "final_activation": nn.Sigmoid(),
+     "num_fmaps":32, "fmap_inc_factor":2, "downsample_factor":2, "kernel_size":3, "padding":"same",
      "upsample_mode":"nearest", "ndim":2}, # inner_generator_param,
-    {"img_depth":len(channel), "img_size":448, "lab_dim":4, "conv_n_ch":32,
-     "n_conv_block":6, "n_conv_list":[1, 1, 2, 2, 3, 3, 3], "n_lin_block":3, "p_dropout":0.2}, # style_encoder_param,
+    {"img_depth":len(channel), "img_size":448, "lab_dim":4, "conv_n_ch":16,
+     "n_conv_block":7, "n_conv_list":[1, 1, 2, 2, 3, 3, 3], "n_lin_block":3, "p_dropout":0.2}, # style_encoder_param,
     {"batchnorm_dim": 0}, #generator_param,
-    {"img_depth":len(channel), "img_size":448, "lab_dim":4, "conv_n_ch":32,
-     "n_conv_block":6, "n_conv_list":[1, 1, 2, 2, 3, 3], "n_lin_block":3, "p_dropout":0.2}, # discriminator_param,
+    {"img_depth":len(channel), "img_size":448, "lab_dim":4, "conv_n_ch":16,
+     "n_conv_block":7, "n_conv_list":[1, 1, 2, 2, 3, 3, 3], "n_lin_block":3, "p_dropout":0.2}, # discriminator_param,
     {"lr": 1e-4}, # adam_param_g,
     {"lr": 1e-5}, # adam_param_d,
     0.8, # beta_moving_avg,
@@ -465,22 +439,29 @@ lit_model = LightningGANV2(
     None, # H_target_shape=None
     True) # apply_softmax=False
 
-batch_size = 8 #len(dataset_fold[fold]["train"])
+batch_size = 32 #len(dataset_fold[fold]["train"])
+
+# from lightning.pytorch.strategies import DDPStrategy
 
 trainer = L.Trainer(
                     accelerator="gpu",
-                    devices=1,
+                    devices=2,
                     #precision=16,
-                    #strategy="ddp_find_unused_parameters_true"
+                    #strategy="ddp_notebook",
+                    strategy="ddp_find_unused_parameters_true",#DDPStrategy(static_graph=True)
                     max_epochs=max_epoch,
                     logger=tb_logger,
-                    #num_sanity_val_steps=0, #to use only if you know the trainer is working !
+                    #num_sanity_val_steps=2, #to use only if you know the trainer is working !
                     callbacks=[checkpoint_callback],
                     #enable_checkpointing=False,
-                    enable_progress_bar=False,
+                    enable_progress_bar=True,
                     #profiler="simple"
                     )
 
+import resource
+soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+resource.setrlimit(resource.RLIMIT_NOFILE, (hard, hard))
+
 trainer.fit(lit_model, DataLoader(dataset_fold[fold]["train"], batch_size=batch_size,
-                                  num_workers=1, persistent_workers=True))#,
-                                  #shuffle=True))
+                                  num_workers=1, persistent_workers=True,
+                                  shuffle=True))
