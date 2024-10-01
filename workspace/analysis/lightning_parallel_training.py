@@ -621,10 +621,10 @@ class LightningGANV2(L.LightningModule):
 
         # Store loss for logging later on
         self.cycle_loss_L.append(cycle_loss * batch_size)
-        self.adv_loss_L.append(adv_loss *  batch_size)
+        self.adv_loss_L.append(adv_loss * batch_size)
         self.d_loss_L.append(d_loss * batch_size)
 
-        if batch_idx == 0 and ((self.current_epoch % 2 == 0 and self.current_epoch > 0) or (self.current_epoch == self.trainer.max_epochs - 1)):
+        if batch_idx == 0 and ((self.current_epoch % 1 == 0 and self.current_epoch > 0) or (self.current_epoch == self.trainer.max_epochs - 1)):
             if self.trainer.is_global_zero:
                 self.log_images_with_colormap(x, x_style, x_fake, x_cycle, y, y_target, num=4)
 
