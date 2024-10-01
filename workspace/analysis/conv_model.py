@@ -98,7 +98,7 @@ class VGG_ch(nn.Module):
 '''
 
 
-class ConvBlock(torch.nn.Module):
+class ConvBlock(nn.Module):
     """A convolution block for a U-Net. Contains two convolutions, each followed by a ReLU."""
 
     def __init__(
@@ -153,7 +153,7 @@ class ConvBlock(torch.nn.Module):
         return output
 
 
-class Downsample(torch.nn.Module):
+class Downsample(nn.Module):
     """Downsample module for U-Net"""
 
     def __init__(self, downsample_factor: int, ndim: Literal[2, 3] = 2):
@@ -189,7 +189,7 @@ class Downsample(torch.nn.Module):
         return output
 
 
-class CropAndConcat(torch.nn.Module):
+class CropAndConcat(nn.Module):
     def crop(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         """Center-crop x to match spatial dimensions given by y."""
         x_target_size = x.size()[:2] + y.size()[2:]
@@ -206,13 +206,24 @@ class CropAndConcat(torch.nn.Module):
         encoder_cropped = self.crop(encoder_output, upsample_output)
         return torch.cat([encoder_cropped, upsample_output], dim=1)
 
+class AdaIN(nn.Module):
+    def __init__(self, style_dim, num_features):
+        super().__init__()
+        self.norm = nn.InstanceNorm2d(num_features, affine=False)
+        self.fc = nn.Linear(style_dim, num_features*2)
 
-class OutputConv(torch.nn.Module):
+    def forward(self, x, s):
+        h = self.fc(s)
+        h = h.view(h.size(0), h.size(1), 1, 1)
+        gamma, beta = torch.chunk(h, chunks=2, dim=1)
+        return (1 + gamma) * self.norm(x) + beta
+
+class OutputConv(nn.Module):
     def __init__(
         self,
         in_channels: int,
         out_channels: int,
-        activation: Optional[torch.nn.Module] = None,
+        activation: Optional[nn.Module] = None,
         ndim: Literal[2, 3] = 2,
     ):
         """A convolutional block that applies a torch activation function.
@@ -220,7 +231,7 @@ class OutputConv(torch.nn.Module):
         Args:
             in_channels (int): Number of input channels
             out_channels (int): Number of output channels
-            activation (torch.nn.Module  |  None, optional): An instance of any torch activation
+            activation (nn.Module  |  None, optional): An instance of any torch activation
                 function (e.g., ``torch.nn.ReLU()``). Defaults to None for no activation after the
                 convolution.
             ndim (Literal[2,3], optional): Number of dimensions for the convolution operation.
@@ -245,13 +256,13 @@ class OutputConv(torch.nn.Module):
         return x
 
 
-class UNet(torch.nn.Module):
+class UNet(nn.Module):
     def __init__(
         self,
         depth: int,
         in_channels: int,
         out_channels: int = 1,
-        final_activation: Optional[torch.nn.Module] = None,
+        final_activation: Optional[nn.Module] = None,
         num_fmaps: int = 64,
         fmap_inc_factor: int = 2,
         downsample_factor: int = 2,
@@ -270,7 +281,7 @@ class UNet(torch.nn.Module):
             in_channels (int): The number of input channels in the images.
             out_channels (int, optional): How many channels the output should have. Depends on your
                 task. Defaults to 1.
-            final_activation (Optional[torch.nn.Module], optional): Activation to use in final
+            final_activation (Optional[nn.Module], optional): Activation to use in final
                 output block. Depends on your task. Defaults to None.
             num_fmaps (int, optional): Number of feature maps in the first layer. Defaults to 64.
             fmap_inc_factor (int, optional): Factor by which to multiply the number of feature maps
@@ -311,7 +322,7 @@ class UNet(torch.nn.Module):
         self.upsample_mode = upsample_mode
 
         # left convolutional passes
-        self.left_convs = torch.nn.ModuleList()
+        self.left_convs = nn.ModuleList()
         for level in range(self.depth):
             fmaps_in, fmaps_out = self.compute_fmaps_encoder(level)
             self.left_convs.append(
@@ -321,7 +332,7 @@ class UNet(torch.nn.Module):
             )
 
         # right convolutional passes
-        self.right_convs = torch.nn.ModuleList()
+        self.right_convs = nn.ModuleList()
         for level in range(self.depth - 1):
             fmaps_in, fmaps_out = self.compute_fmaps_decoder(level)
             self.right_convs.append(
@@ -441,6 +452,45 @@ class ImgGenerator(nn.Module):
         x = torch.cat([x, style], dim=1)
         return self.generator(x)
 
+class ImgGeneratorV2(nn.Module):
+
+    def __init__(self, generator, style_encoder, batchnorm_dim=0):
+        super().__init__()
+        self.generator = generator
+        self.style_encoder = style_encoder
+        self.transform = nn.BatchNorm1d(batchnorm_dim) if batchnorm_dim!=0 else nn.Identity()
+
+    def forward(self, x, y):
+        """
+        x: torch.Tensor
+            The source image
+        y: torch.Tensor
+            The style image
+        """
+        style = self.transform(self.style_encoder(y))
+        # Concatenate the style vector with the input image
+        style = style.reshape(-1, style.size(1)//x.size(3), x.size(3)).unsqueeze(1)
+        style = style.repeat(1, 1, x.size(2)//style.size(2), 1)
+        x = torch.cat([x, style], dim=1)
+        return self.generator(x)
+
+class ImgGeneratorV3(nn.Module):
+
+    def __init__(self, generator, style_encoder, batchnorm_dim=0):
+        super().__init__()
+        self.generator = generator
+        self.style_encoder = style_encoder
+        self.transform = nn.BatchNorm1d(batchnorm_dim) if batchnorm_dim!=0 else nn.Identity()
+
+    def forward(self, x, y):
+        """
+        x: torch.Tensor
+            The source image
+        y: torch.Tensor
+            The style image
+        """
+        style = self.transform(self.style_encoder(y))
+        return self.generator(x, style)
 '''
 ------------------- Model for vector input -------------------
 '''

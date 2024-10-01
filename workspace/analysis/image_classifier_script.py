@@ -395,7 +395,6 @@ classifier Training
 
 
 
-
 '''
 GANs Training
 '''
@@ -421,19 +420,19 @@ max_epoch = 30
 lit_model = LightningGANV2(
     conv_model.UNet, # inner_generator,
     conv_model.VGG_ch, # style_encoder,
-    conv_model.ImgGenerator, # generator,
+    conv_model.ImgGeneratorV2, # generator,
     conv_model.VGG_ch, # discriminator,
-    {"depth":5, "in_channels":7, "out_channels":3, "final_activation": nn.Sigmoid(),
+    {"depth":4, "in_channels":len(channel)+1, "out_channels":len(channel), "final_activation": nn.Sigmoid(),
      "num_fmaps":32, "fmap_inc_factor":2, "downsample_factor":2, "kernel_size":3, "padding":"same",
      "upsample_mode":"nearest", "ndim":2}, # inner_generator_param,
+    {"img_depth":len(channel), "img_size":448, "lab_dim":7168, "conv_n_ch":16,
+     "n_conv_block":7, "n_conv_list":[1, 1, 2, 2, 3, 3, 3], "n_lin_block":1, "p_dropout":0.2}, # style_encoder_param,
+    {"batchnorm_dim": 7168}, #generator_param,
     {"img_depth":len(channel), "img_size":448, "lab_dim":4, "conv_n_ch":16,
-     "n_conv_block":7, "n_conv_list":[1, 1, 2, 2, 3, 3, 3], "n_lin_block":3, "p_dropout":0.2}, # style_encoder_param,
-    {"batchnorm_dim": 0}, #generator_param,
-    {"img_depth":len(channel), "img_size":448, "lab_dim":4, "conv_n_ch":16,
-     "n_conv_block":7, "n_conv_list":[1, 1, 2, 2, 3, 3, 3], "n_lin_block":3, "p_dropout":0.2}, # discriminator_param,
-    {"lr": 1e-4}, # adam_param_g,
-    {"lr": 1e-5}, # adam_param_d,
-    0.8, # beta_moving_avg,
+     "n_conv_block":7, "n_conv_list":[1, 1, 1, 1, 1, 1, 1], "n_lin_block":3, "p_dropout":0.2}, # discriminator_param,
+    {"lr": 1e-5}, # adam_param_g,
+    {"lr": 5e-4}, # adam_param_d,
+    0.99, # beta_moving_avg, 0.8 pretty bad (discriminator is too strong and the generator is not updated quick enough.)
     4, #n_class
     False, # if_reshape_vector=False,
     None, # H_target_shape=None
@@ -454,7 +453,7 @@ trainer = L.Trainer(
                     #num_sanity_val_steps=2, #to use only if you know the trainer is working !
                     callbacks=[checkpoint_callback],
                     #enable_checkpointing=False,
-                    enable_progress_bar=True,
+                    enable_progress_bar=False,
                     #profiler="simple"
                     )
 
