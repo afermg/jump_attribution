@@ -206,17 +206,6 @@ class CropAndConcat(nn.Module):
         encoder_cropped = self.crop(encoder_output, upsample_output)
         return torch.cat([encoder_cropped, upsample_output], dim=1)
 
-class AdaIN(nn.Module):
-    def __init__(self, style_dim, num_features):
-        super().__init__()
-        self.norm = nn.InstanceNorm2d(num_features, affine=False)
-        self.fc = nn.Linear(style_dim, num_features*2)
-
-    def forward(self, x, s):
-        h = self.fc(s)
-        h = h.view(h.size(0), h.size(1), 1, 1)
-        gamma, beta = torch.chunk(h, chunks=2, dim=1)
-        return (1 + gamma) * self.norm(x) + beta
 
 class OutputConv(nn.Module):
     def __init__(
@@ -428,6 +417,315 @@ class UNet(nn.Module):
         return output
 
 '''
+------------------- Model UNetAdaIN  -------------------
+'''
+
+class ConvBlock_IN(nn.Module):
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: int,
+        padding: Literal["same", "valid"] = "same"
+    ):
+        """
+        Args:
+            in_channels (int): The number of input channels for this conv block.
+            out_channels (int): The number of output channels for this conv block.
+            kernel_size (int): The size of the kernel. A kernel size of N signifies an NxN or NxNxN
+                kernel for ``ndim=2`` and ``ndim=3``, respectively.
+            padding (Literal["same", "valid"], optional): The type of padding to
+                use. "same" means padding is added to preserve the input dimensions.
+                "valid" means no padding is added. Defaults to "same".
+
+        """
+        super().__init__()
+        # define layers in conv pass
+        self.conv_pass = torch.nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, kernel_size=kernel_size, padding=padding),
+            nn.InstanceNorm2d(out_channels),
+            nn.ReLU(),
+            nn.Conv2d(out_channels, out_channels, kernel_size=kernel_size, padding=padding),
+            nn.InstanceNorm2d(out_channels),
+            nn.ReLU()
+        )
+
+        for _name, layer in self.named_modules():
+            if isinstance(layer, tuple(convops.values())):
+                nn.init.kaiming_normal_(layer.weight, nonlinearity="relu")
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        output: torch.Tensor = self.conv_pass(x)
+        return output
+
+class AdaIN_simple(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, x, s):
+        eps = 1e-5
+        mean_x = torch.mean(x, dim=[2,3], keepdim=True)
+        mean_s = torch.mean(s, dim=[2,3], keepdim=True)
+        std_x = torch.std(x, dim=[2,3], keepdim=True) + eps
+        std_s = torch.std(s, dim=[2,3], keepdim=True) + eps
+        return (x - mean_x)/ std_x * std_s + mean_s
+
+class AdaIN_learned(nn.Module):
+    def __init__(self, num_features, style_dim):
+        super().__init__()
+        self.norm = nn.InstanceNorm2d(num_features, affine=False)
+        self.fc = nn.Linear(style_dim, num_features*2)
+
+    def forward(self, x, s):
+        h = self.fc(s)
+        h = h.view(h.size(0), h.size(1), 1, 1)
+        gamma, beta = torch.chunk(h, chunks=2, dim=1)
+        return (1 + gamma) * self.norm(x) + beta
+
+
+class ConvBlock_AdaIN(nn.Module):
+
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: int,
+        padding: Literal["same", "valid"] = "same",
+        ada_in: Literal["simple", "learned"] = "simple",
+        style_dim: int
+    ):
+        """
+        Args:
+            in_channels (int): The number of input channels for this conv block.
+            out_channels (int): The number of output channels for this conv block.
+            kernel_size (int): The size of the kernel. A kernel size of N signifies an NxN or NxNxN
+                kernel for ``ndim=2`` and ``ndim=3``, respectively.
+            padding (Literal["same", "valid"], optional): The type of padding to
+                use. "same" means padding is added to preserve the input dimensions.
+                "valid" means no padding is added. Defaults to "same".
+            ada_in (Literal["simple", "learned"], optional): The type of AdaIN layer to
+                use. "simple" means ada_in is based on mean and std computation of the input and style
+                "learned" means ada_in is based on learned std and mean of the style through linear layer.
+                Default to "simple".
+            style_dim (int): The dimension of the style embedding.
+
+        """
+        super().__init__()
+        # define layers in conv pass
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=kernel_size, padding=padding)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=kernel_size, padding=padding)
+        self.norm1 = AdaIN_simple() if ada_in == "simple" else AdaIN_learned(out_channels, style_dim)
+        self.norm2 = AdaIN_simple() if ada_in == "simple" else AdaIN_learned(out_channels, style_dim)
+        self.actv = nn.ReLU()
+
+        #initialize weight
+        nn.init.kaiming_normal_(self.conv1.weight, nonlinearity="relu")
+        nn.init.kaiming_normal_(self.conv2.weight, nonlinearity="relu")
+
+
+    def forward(self, x: torch.Tensor, s: torch.Tensor) -> torch.Tensor:
+        output = self.actv(self.norm1(self.conv1(x), s))
+        output = self.actv(self.norm2(self.conv2(output), s))
+        return output
+
+
+class ConvBlock_IN_AdaIN(nn.Module):
+
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: int,
+        padding: Literal["same", "valid"] = "same",
+        ada_in: Literal["simple", "learned"] = "simple",
+        style_dim: int
+    ):
+        """
+        Args:
+            in_channels (int): The number of input channels for this conv block.
+            out_channels (int): The number of output channels for this conv block.
+            kernel_size (int): The size of the kernel. A kernel size of N signifies an NxN or NxNxN
+                kernel for ``ndim=2`` and ``ndim=3``, respectively.
+            padding (Literal["same", "valid"], optional): The type of padding to
+                use. "same" means padding is added to preserve the input dimensions.
+                "valid" means no padding is added. Defaults to "same".
+            ada_in (Literal["simple", "learned"], optional): The type of AdaIN layer to
+                use. "simple" means ada_in is based on mean and std computation of the input and style
+                "learned" means ada_in is based on learned std and mean of the style through linear layer.
+                Default to "simple".
+            style_dim (int): The dimension of the style embedding.
+
+        """
+        super().__init__()
+        # define layers in conv pass
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=kernel_size, padding=padding)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=kernel_size, padding=padding)
+        self.norm1 = nn.InstanceNorm2d(out_channels)
+        self.norm2 = AdaIN_simple() if ada_in == "simple" else AdaIN_learned(out_channels, style_dim)
+        self.actv = nn.ReLU()
+
+        #initialize weight
+        nn.init.kaiming_normal_(self.conv1.weight, nonlinearity="relu")
+        nn.init.kaiming_normal_(self.conv2.weight, nonlinearity="relu")
+
+
+    def forward(self, x: torch.Tensor, s: torch.Tensor) -> torch.Tensor:
+        output = self.actv(self.norm1(self.conv1(x)))
+        output = self.actv(self.norm2(self.conv2(output), s))
+        return output
+
+class UNetAdaIN(nn.Module):
+    def __init__(
+        self,
+        depth: int,
+        in_channels: int,
+        out_channels: int = 1,
+        final_activation: Optional[nn.Module] = None,
+        num_fmaps: int = 64,
+        fmap_inc_factor: int = 2,
+        max_fmaps: Optional[int] = None,
+        downsample_factor: int = 2,
+        kernel_size: int = 3,
+        padding: Literal["same", "valid"] = "same",
+        upsample_mode: str = "nearest",
+        ada_in: Literal["simple", "learned"] = "simple",
+        style_dim: int
+    ):
+        """A U-Net for 2D or 3D input that expects tensors shaped like:
+        ``(batch, channels, height, width)`` or ``(batch, channels, depth, height, width)``,
+        respectively.
+
+        Args:
+            depth (int): The number of levels in the U-Net. 2 is the smallest that really makes
+                sense for the U-Net architecture.
+            in_channels (int): The number of input channels in the images.
+            out_channels (int, optional): How many channels the output should have. Depends on your
+                task. Defaults to 1.
+            final_activation (Optional[nn.Module], optional): Activation to use in final
+                output block. Depends on your task. Defaults to None.
+            num_fmaps (int, optional): Number of feature maps in the first layer. Defaults to 64.
+            fmap_inc_factor (int, optional): Factor by which to multiply the number of feature maps
+                between levels. Level ``l`` will have ``num_fmaps*fmap_inc_factor**l`` feature maps.
+                Defaults to 2.
+            max_fmaps: (int, optional): maximum channel allowed in convolutional block. Defaults to None.
+            downsample_factor (int, optional): Factor for down- and upsampling of the feature maps
+                between levels. Defaults to 2.
+            kernel_size (int, optional): Kernel size to use in convolutions on both sides of the
+                UNet. Defaults to 3.
+            padding (Literal["same", "valid"], optional): The type of padding to
+                use. "same" means padding is added to preserve the input dimensions.
+                "valid" means no padding is added. Defaults to "same".
+            upsample_mode (str, optional): The upsampling mode to pass to ``torch.nn.Upsample``.
+                Usually "nearest" or "bilinear". Defaults to "nearest".
+            ada_in (Literal["simple", "learned"], optional): The type of AdaIN layer to
+                use. "simple" means ada_in is based on mean and std computation of the input and style
+                "learned" means ada_in is based on learned std and mean of the style through linear layer.
+                Default to "simple".
+            style_dim (int): The dimension of the style embedding.
+
+        """
+
+        super().__init__()
+        self.depth = depth
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.final_activation = final_activation
+        self.num_fmaps = num_fmaps
+        self.fmap_inc_factor = fmap_inc_factor
+        self.max_fmaps = max_fmaps
+        self.downsample_factor = downsample_factor
+        self.kernel_size = kernel_size
+        self.padding = padding
+        self.upsample_mode = upsample_mode
+        self.ada_in = ada_in
+        self.style_dim = style_dim
+
+        # left convolutional passes
+        self.left_convs = nn.ModuleList()
+        for level in range(self.depth - 1):
+            fmaps_in, fmaps_out = self.compute_fmaps_encoder(level)
+            self.left_convs.append(ConvBlock_IN(fmaps_in, fmaps_out, self.kernel_size, self.padding))
+
+        # bottleneck convolutional passes
+        fmaps_in, fmaps_out = self.compute_fmaps_encoder(self.depth-1)
+        self.bottleneck = ConvBlock_IN_AdaIN(fmaps_in, fmaps_out, self.kernel_size,
+                                             self.padding, self.ada_in, self.style_dim)
+
+        # right convolutional passes
+        self.right_convs = nn.ModuleList()
+        for level in range(self.depth - 1):
+            fmaps_in, fmaps_out = self.compute_fmaps_decoder(level)
+            self.right_convs.append(ConvBlock_AdaIN(fmaps_in, fmaps_out, self.kernel_size,
+                                                    self.padding, self.ada_in, self.style_dim))
+
+        self.downsample = Downsample(self.downsample_factor)
+        self.upsample = nn.Upsample(scale_factor=self.downsample_factor, mode=self.upsample_mode)
+        self.crop_and_concat = CropAndConcat()
+        self.final_conv = OutputConv(self.compute_fmaps_decoder(0)[1], self.out_channels, self.final_activation)
+
+    def compute_fmaps_encoder(self, level: int) -> Tuple[int, int]:
+        """Compute the number of input and output feature maps for
+        a conv block at a given level of the UNet encoder (left side).
+
+        Args:
+        ----
+            level (int): The level of the U-Net which we are computing
+            the feature maps for. Level 0 is the input level, level 1 is
+            the first downsampled layer, and level=depth - 1 is the bottom layer.
+
+        Output (tuple[int, int]): The number of input and output feature maps
+            of the encoder convolutional pass in the given level.
+        """
+        if level == 0:  # Leave out function
+            fmaps_in = self.in_channels
+        else:
+            fmaps_in = min(self.max_fmaps, self.num_fmaps * self.fmap_inc_factor ** (level - 1))
+
+        fmaps_out = min(self.max_fmaps, self.num_fmaps * self.fmap_inc_factor ** level)
+        return fmaps_in, fmaps_out
+
+    def compute_fmaps_decoder(self, level: int) -> Tuple[int, int]:
+        """Compute the number of input and output feature maps for a conv block
+        at a given level of the UNet decoder (right side). Note:
+        The bottom layer (depth - 1) is considered an "encoder" conv pass,
+        so this function is only valid up to depth - 2.
+
+        Args:
+        ----
+            level (int): The level of the U-Net which we are computing
+            the feature maps for. Level 0 is the input level, level 1 is
+            the first downsampled layer, and level=depth - 1 is the bottom layer.
+
+        Output (tuple[int, int]): The number of input and output feature maps
+            of the encoder convolutional pass in the given level.
+        """
+        fmaps_out = min(self.max_fmaps, self.num_fmaps * self.fmap_inc_factor ** level)
+        # fmaps_in is num fmaps of the given level (fmaps_out)
+        # concatenated with the fmaps_out of the deeper level
+        fmaps_in = fmaps_out + min(self.max_fmaps, self.num_fmaps * self.fmap_inc_factor ** (level + 1))
+        return fmaps_in, fmaps_out
+
+    def forward(self, x: torch.Tensor, s: torch.Tensor) -> torch.Tensor:
+        # left side
+        convolution_outputs = []
+        layer_input = x
+        for i in range(self.depth - 1):  # leave out center of for loop
+            conv_out = self.left_convs[i](layer_input)
+            convolution_outputs.append(conv_out)
+            layer_input = self.downsample(conv_out)
+
+        # bottleneck
+        layer_input = self.bottleneck(layer_input, s)
+
+        # right
+        for i in range(0, self.depth - 1)[::-1]:  # leave out center of for loop
+            upsampled = self.upsample(layer_input)
+            concat = self.crop_and_concat(convolution_outputs[i], upsampled)
+            layer_input = self.right_convs[i](concat, s)
+        output: torch.Tensor = self.final_conv(layer_input)
+        return output
+
+'''
 ------------------- Model for img generator -------------------
 '''
 class ImgGenerator(nn.Module):
@@ -476,11 +774,10 @@ class ImgGeneratorV2(nn.Module):
 
 class ImgGeneratorV3(nn.Module):
 
-    def __init__(self, generator, style_encoder, batchnorm_dim=0):
+    def __init__(self, generator, style_encoder):
         super().__init__()
         self.generator = generator
         self.style_encoder = style_encoder
-        self.transform = nn.BatchNorm1d(batchnorm_dim) if batchnorm_dim!=0 else nn.Identity()
 
     def forward(self, x, y):
         """
@@ -489,8 +786,7 @@ class ImgGeneratorV3(nn.Module):
         y: torch.Tensor
             The style image
         """
-        style = self.transform(self.style_encoder(y))
-        return self.generator(x, style)
+        return self.generator(x, self.style_encoder(y))
 '''
 ------------------- Model for vector input -------------------
 '''
