@@ -685,3 +685,208 @@ class LightningGANV2(L.LightningModule):
         opt_g = torch.optim.Adam(self.generator.parameters(), **self.adam_param_g)
         opt_d = torch.optim.Adam(self.discriminator.parameters(), **self.adam_param_d)
         return [opt_g, opt_d], []
+
+
+class LightningStarGANV2(L.LightningModule):
+    def __init__(
+            self,
+            generator,
+            mapping_network,
+            style_encoder,
+            discriminator,
+            generator_param,
+            mapping_network_param,
+            style_encoder_param,
+            discriminator_param,
+            adam_param_g,
+            adam_param_m,
+            adam_param_s,
+            adam_param_d,
+            beta_moving_avg,
+            n_class,
+            apply_softmax=False
+
+    ):
+        super().__init__()
+        self.save_hyperparameters(ignore=["generator","mapping_network", "style_encoder", "discriminator"])
+        #Allow a manual optimization which is required for GANs
+        self.automatic_optimization = False
+
+        # Networks and EMA
+        self.generator = generator(**inner_generator_param)
+        self.mapping_network = mapping_network(**mapping_network_param)
+        self.style_encoder = style_encoder(**style_encoder_param)
+        self.discriminator = discriminator(**discriminator_param)
+        self.generator_ema_weight = list(map(lambda x: x.data.cpu(), self.generator.parameters()))
+        self.mapping_network_ema_weight = list(map(lambda x: x.data.cpu(), self.mapping_network.parameters()))
+        self.style_encoder_ema_weight = list(map(lambda x: x.data.cpu(), self.style_encoder.parameters()))
+
+        # Optimizer
+        self.adam_param_g = adam_param_g
+        self.adam_param_m = adam_param_m
+        self.adam_param_s = adam_param_s
+        self.adam_param_d = adam_param_d
+
+        # Exponential Moving Average to stabilize the training of GANs
+        self.beta_moving_avg = beta_moving_avg
+        self.n_class = n_class
+
+        # Accuracy
+        self.train_accuracy_true = MulticlassAccuracy(num_classes=self.n_class, average="macro")
+        self.train_accuracy_fake = MulticlassAccuracy(num_classes=self.n_class, average="macro")
+        self.apply_softmax = apply_softmax
+        self.adv_loss_L = []
+        self.sty_loss_L = []
+        self.d_loss_L = []
+        self.cycle_loss_L = []
+
+    def cycle_loss(self, x, x_cycle):
+        return l1_loss(x, x_cycle)
+
+    def adversarial_loss(self, y_hat, y):
+        return cross_entropy(y_hat, y)
+
+    def reshape_vector(self, x):
+        """
+        Expect x to have the following dimension 1D: N_features
+        """
+        return x.reshape(1, self.H_target_shape, -1)
+
+##### NB, these moving average over parameters and copy of parameters only average weights and bias. It does not take into account
+##### Batch Normalization layers ! For a more general implementation, maybe it would be interesting to implement this:
+##### https://github.com/yasinyazici/EMA_GAN/blob/master/common/misc.py#L64
+##### from the paper THE UNUSUAL EFFECTIVENESS OF AVERAGING IN GAN TRAINING Yasin Yazıcı et al. 2019
+
+    def exponential_moving_average(self, model):
+        """Update the EMA model's parameters with an exponential moving average"""
+        for param, ema_param in zip(model.parameters(), self.generator_ema_weight):
+            # in place modif of ema_param with : ema_param * 0.999 + 0.001 * param
+            ema_param.data.mul_(self.beta_moving_avg).add_((1 - self.beta_moving_avg) * param.data.cpu())
+
+    def copy_parameters_from_ema(self, target_model):
+        """Copy the parameters of a model to another model"""
+        for param, target_param in zip(self.generator_ema_weight, target_model.parameters()):
+            target_param.data.copy_(param.data)
+
+    def training_step(self, batch, batch_idx):
+        x, y = batch
+        # Create target and style image
+        batch_size = len(y)
+        random_index = torch.randperm(batch_size)
+        x_style = x[random_index].clone()
+        y_target = y[random_index].clone()
+
+        # Fetch the optimizers
+        optimizer_g, optimizer_d = self.optimizers()
+        # Train generator
+        # Disable grad
+        self.toggle_optimizer(optimizer_g) #Require grad
+        optimizer_g.zero_grad()
+        # Generate images
+        x_fake = self.generator(x, x_style)
+        x_cycle = self.generator(x_fake, x)
+        # Discriminate
+        discriminator_x_fake = self.discriminator(x_fake)
+
+        # Losses to  train the generator
+        # 1. make sure the image can be reconstructed
+        cycle_loss = self.cycle_loss(x, x_cycle)
+        # 2. make sure the discriminator is fooled
+        adv_loss = self.adversarial_loss(discriminator_x_fake, y_target)
+        # Total g_loss
+        g_loss = cycle_loss + adv_loss
+        # Optimize the generator
+        self.manual_backward(g_loss)
+        optimizer_g.step()
+        self.untoggle_optimizer(optimizer_g) #Disable grad
+
+        # Train Discriminator
+        self.toggle_optimizer(optimizer_d) #Require grad
+        optimizer_d.zero_grad()
+        # Discriminate
+        discriminator_x = self.discriminator(x)
+        discriminator_x_fake = self.discriminator(x_fake.detach())
+        # Losses to train the discriminator
+        # 1. make sure the discriminator can tell real is real
+        real_loss = self.adversarial_loss(discriminator_x, y)
+        # 2. make sure the discriminator can tell fake is fake
+        fake_loss = -self.adversarial_loss(discriminator_x_fake, y_target)
+        # Total d_loss
+        d_loss = (real_loss + fake_loss) * 0.5
+        # compute accuracy
+        if self.apply_softmax:
+            discriminator_x = nn.Softmax(dim=1)(discriminator_x)
+            discriminator_x_fake = nn.Softmax(dim=1)(discriminator_x_fake)
+        self.train_accuracy_true.update(discriminator_x, y)
+        self.train_accuracy_fake.update(discriminator_x_fake, y_target)
+        # Optimize the discriminator
+        self.manual_backward(d_loss)
+        optimizer_d.step()
+        self.untoggle_optimizer(optimizer_d) #Disable grad
+
+        # Store loss for logging later on
+        self.cycle_loss_L.append(cycle_loss * batch_size)
+        self.adv_loss_L.append(adv_loss * batch_size)
+        self.d_loss_L.append(d_loss * batch_size)
+
+        if batch_idx == 0 and ((self.current_epoch % 1 == 0 and self.current_epoch > 0) or (self.current_epoch == self.trainer.max_epochs - 1)):
+            if self.trainer.is_global_zero:
+                self.log_images_with_colormap(x, x_style, x_fake, x_cycle, y, y_target, num=4)
+
+        self.exponential_moving_average(self.generator)
+
+    def on_train_epoch_end(self):
+        self.copy_parameters_from_ema(self.generator)
+        self.log("train_acc_true", self.train_accuracy_true.compute(), on_epoch=True, sync_dist=True)
+        self.log("train_acc_fake", self.train_accuracy_fake.compute(), on_epoch=True, sync_dist=True)
+        self.train_accuracy_true.reset()
+        self.train_accuracy_fake.reset()
+
+        cycle_loss_epoch = torch.sum(torch.cat(self.all_gather(self.cycle_loss_L), dim=0)) / len(self.trainer.train_dataloader.dataset)
+        adv_loss_epoch = torch.sum(torch.cat(self.all_gather(self.adv_loss_L), dim=0)) / len(self.trainer.train_dataloader.dataset)
+        d_loss_epoch = torch.sum(torch.cat(self.all_gather(self.d_loss_L), dim=0)) / len(self.trainer.train_dataloader.dataset)
+        if self.trainer.is_global_zero:
+            self.log("cycle_loss_epoch", cycle_loss_epoch, logger=True, rank_zero_only=True)
+            self.log("adv_loss_epoch", adv_loss_epoch, logger=True, rank_zero_only=True)
+            self.log("d_loss_epoch", d_loss_epoch, logger=True, rank_zero_only=True)
+        self.cycle_loss_L = []
+        self.adv_loss_L = []
+        self.d_loss_L = []
+        del cycle_loss_epoch, adv_loss_epoch, d_loss_epoch
+
+
+    def log_images_with_colormap(self, x, x_style, x_fake, x_cycle, y, y_target, num=4):
+        fig, axs = plt.subplots(num, 4, figsize=(15, 20), squeeze=False)
+        # Convert tensors to NumPy
+        for i in range(num):
+            input_img = x[i]
+            style_img = x_style[i]
+            fake_img = x_fake[i]
+            cycled_img = x_cycle[i]
+            input_class = y[i]
+            style_class = y_target[i]
+            if self.if_reshape_vector:
+                input_img = self.reshape_vector(input_img)
+                style_img = self.reshape_vector(style_img)
+                fake_img = self.reshape_vector(fake_img)
+                cycled_img = self.reshape_vector(cycled_img)
+
+            axs[i][0].imshow(input_img.cpu().permute(1, 2, 0).detach().numpy())
+            axs[i][0].set_title(f"Input image - Class_{input_class}")
+            axs[i][1].imshow(style_img.cpu().permute(1, 2, 0).detach().numpy())
+            axs[i][1].set_title(f"Style image - Class_{style_class}")
+            axs[i][2].imshow(fake_img.cpu().permute(1, 2, 0).detach().numpy())
+            axs[i][2].set_title(f"Generated image - Class_{style_class}")
+            axs[i][3].imshow(cycled_img.cpu().permute(1, 2, 0).detach().numpy())
+            axs[i][3].set_title(f"Cycled image - Class_{input_class}")
+
+        for ax in axs.flatten():
+            ax.axis("off")
+        # Save the figure as a TensorBoard image
+        self.logger.experiment.add_figure("train/generated_images", fig, self.current_epoch)
+        plt.close(fig)
+
+    def configure_optimizers(self):
+        opt_g = torch.optim.Adam(self.generator.parameters(), **self.adam_param_g)
+        opt_d = torch.optim.Adam(self.discriminator.parameters(), **self.adam_param_d)
+        return [opt_g, opt_d], []
