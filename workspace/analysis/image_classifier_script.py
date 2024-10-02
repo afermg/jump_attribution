@@ -393,8 +393,6 @@ classifier Training
 #             DataLoader(dataset_fold[0]["val"], batch_size=128, num_workers=1, persistent_workers=True))
 
 
-
-
 '''
 GANs Training
 '''
@@ -418,27 +416,27 @@ seed_everything(42, workers=True)
 
 max_epoch = 30
 lit_model = LightningGANV2(
-    conv_model.UNet, # inner_generator,
+    conv_model.UNetAdaIN, # inner_generator,
     conv_model.VGG_ch, # style_encoder,
-    conv_model.ImgGeneratorV2, # generator,
+    conv_model.ImgGeneratorV3, # generator,
     conv_model.VGG_ch, # discriminator,
-    {"depth":4, "in_channels":len(channel)+1, "out_channels":len(channel), "final_activation": nn.Sigmoid(),
-     "num_fmaps":32, "fmap_inc_factor":2, "downsample_factor":2, "kernel_size":3, "padding":"same",
-     "upsample_mode":"nearest", "ndim":2}, # inner_generator_param,
-    {"img_depth":len(channel), "img_size":448, "lab_dim":7168, "conv_n_ch":16,
+    {"depth":5, "style_dim": 1000, "in_channels":len(channel), "out_channels":len(channel), "final_activation": nn.Sigmoid(),
+     "num_fmaps":32, "fmap_inc_factor":2, "max_fmaps": 512, "downsample_factor":2, "kernel_size":3, "padding":"same",
+     "upsample_mode":"nearest", "ada_in": "learned"}, # inner_generator_param,
+    {"img_depth":len(channel), "img_size":448, "lab_dim":1000, "conv_n_ch":16,
      "n_conv_block":7, "n_conv_list":[1, 1, 2, 2, 3, 3, 3], "n_lin_block":1, "p_dropout":0.2}, # style_encoder_param,
-    {"batchnorm_dim": 7168}, #generator_param,
+    {"batchnorm_dim": 0}, #generator_param,
     {"img_depth":len(channel), "img_size":448, "lab_dim":4, "conv_n_ch":16,
-     "n_conv_block":7, "n_conv_list":[1, 1, 1, 1, 1, 1, 1], "n_lin_block":3, "p_dropout":0.2}, # discriminator_param,
+     "n_conv_block":7, "n_conv_list":[1, 1, 2, 2, 3, 3, 3], "n_lin_block":2, "p_dropout":0.2}, # discriminator_param,
     {"lr": 1e-5}, # adam_param_g,
     {"lr": 5e-4}, # adam_param_d,
-    0.99, # beta_moving_avg, 0.8 pretty bad (discriminator is too strong and the generator is not updated quick enough.)
+    0.1, # beta_moving_avg, 0.8 pretty bad (discriminator is too strong and the generator is not updated quick enough.)
     4, #n_class
     False, # if_reshape_vector=False,
     None, # H_target_shape=None
     True) # apply_softmax=False
 
-batch_size = 32 #len(dataset_fold[fold]["train"])
+batch_size = 16 #len(dataset_fold[fold]["train"])
 
 # from lightning.pytorch.strategies import DDPStrategy
 
