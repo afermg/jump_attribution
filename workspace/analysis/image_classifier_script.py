@@ -227,7 +227,13 @@ dataset_fold = {i: {"train": custom_dataset.ImageDataset(imgs_path,
                                                        label_transform=lambda label: torch.tensor(label, dtype=torch.long))}
                 for i in fold_L}
 
-# ### i) Memory usage per fold
+custom_dataset.ImageDataset(imgs_path,
+                            channel=id_channel,
+                            fold_idx=kfold_train_val_test[i][0],
+                            img_transform=v2.Compose([v2.Lambda(lambda img: torch.tensor(img, dtype=torch.float32)),
+                                                      transform_train]),
+                            label_transform=lambda label: torch.tensor(label, dtype=torch.long))
+# ### I) Memory usage per fold
 
 # def fold_memory_usage(fold:int, split:str ="train", batch_size:int=None):
 #     total_size = 0
