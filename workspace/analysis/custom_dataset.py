@@ -51,7 +51,7 @@ class ImageDataset_Ref(Dataset):
     def __getitem__(self, idx):
         imgs1 = self.imgs_zarr["imgs"].oindex[self.imgs1_idx[idx], self.channel]
         imgs2 = self.imgs_zarr["imgs"].oindex[self.imgs2_idx[idx], self.channel]
-        labels = self.imgs_zarr["labels"].oindex[self.imgs_idx[idx]]
+        labels = self.imgs_zarr["labels"].oindex[self.imgs1_idx[idx]]
         if self.img_transform is not None:
             imgs1 = self.img_transform(imgs1)
             imgs2 = self.img_transform(imgs2)
