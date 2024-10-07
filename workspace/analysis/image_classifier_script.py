@@ -196,12 +196,12 @@ kfold_train_val_test = list(starmap(lambda train, val_test: (train,
                                                                                np.zeros(len(val_test)), image_dataset["labels"].oindex[val_test])))[0]),
                                     kfold_train_test))
 # ## #i) Transformation applied to train split
-transform_train = v2.RandomApply([v2.RandomVerticalFlip(p=0.5),
-                                  v2.RandomChoice([v2.Lambda(lambda img: v2.functional.rotate(img, angle=0)),
-                                                   v2.Lambda(lambda img: v2.functional.rotate(img, angle=90)),
-                                                   v2.Lambda(lambda img: v2.functional.rotate(img, angle=180)),
-                                                   v2.Lambda(lambda img: v2.functional.rotate(img, angle=270))])],
-                                 p=1)
+img_transform_train = v2.RandomApply([v2.RandomVerticalFlip(p=0.5),
+                                      v2.RandomChoice([v2.Lambda(lambda img: v2.functional.rotate(img, angle=0)),
+                                                       v2.Lambda(lambda img: v2.functional.rotate(img, angle=90)),
+                                                       v2.Lambda(lambda img: v2.functional.rotate(img, angle=180)),
+                                                       v2.Lambda(lambda img: v2.functional.rotate(img, angle=270))])],
+                                     p=1)
 
 fold_L = np.arange(5)
 channel = ["AGP","DNA", "ER"]#, "Mito"]#, "RNA"]
@@ -209,30 +209,32 @@ channel.sort()
 map_channel = {ch: i for i, ch in enumerate(["AGP", "DNA", "ER", "Mito", "RNA"])}
 id_channel = np.array([map_channel[ch] for ch in channel])
 imgs_path = Path("image_active_dataset/imgs_labels_groups.zarr")
-dataset_fold = {i: {"train": custom_dataset.ImageDataset(imgs_path,
-                                                         channel=id_channel,
-                                                         fold_idx=kfold_train_val_test[i][0],
-                                                         img_transform=v2.Compose([v2.Lambda(lambda img: torch.tensor(img, dtype=torch.float32)),
-                                                                                   transform_train]),
-                                                         label_transform=lambda label: torch.tensor(label, dtype=torch.long)),
-                    "val": custom_dataset.ImageDataset(imgs_path,
-                                                       channel=id_channel,
-                                                       fold_idx=kfold_train_val_test[i][1],
-                                                       img_transform=lambda img: torch.tensor(img, dtype=torch.float32),
-                                                       label_transform=lambda label: torch.tensor(label, dtype=torch.long)),
-                    "test": custom_dataset.ImageDataset(imgs_path,
-                                                       channel=id_channel,
-                                                       fold_idx=kfold_train_val_test[i][2],
-                                                       img_transform=lambda img: torch.tensor(img, dtype=torch.float32),
-                                                       label_transform=lambda label: torch.tensor(label, dtype=torch.long))}
-                for i in fold_L}
 
-custom_dataset.ImageDataset(imgs_path,
-                            channel=id_channel,
-                            fold_idx=kfold_train_val_test[i][0],
-                            img_transform=v2.Compose([v2.Lambda(lambda img: torch.tensor(img, dtype=torch.float32)),
-                                                      transform_train]),
-                            label_transform=lambda label: torch.tensor(label, dtype=torch.long))
+def create_dataset_fold(Dataset, imgs_path, id_channel, kfold_train_val_test, img_transform_train):
+    return {i: {"train": Dataset(imgs_path,
+                                 channel=id_channel,
+                                 fold_idx=kfold_train_val_test[i][0],
+                                 img_transform=v2.Compose([v2.Lambda(lambda img:
+                                                                     torch.tensor(img, dtype=torch.float32)),
+                                                           img_transform_train]),
+                                 label_transform=lambda label: torch.tensor(label, dtype=torch.long)),
+                "val": Dataset(imgs_path,
+                               channel=id_channel,
+                               fold_idx=kfold_train_val_test[i][1],
+                               img_transform=lambda img: torch.tensor(img, dtype=torch.float32),
+                               label_transform=lambda label: torch.tensor(label, dtype=torch.long)),
+                "test": Dataset(imgs_path,
+                                channel=id_channel,
+                                fold_idx=kfold_train_val_test[i][2],
+                                img_transform=lambda img: torch.tensor(img, dtype=torch.float32),
+                                label_transform=lambda label: torch.tensor(label, dtype=torch.long))}
+            for i in fold_L}
+
+
+dataset_fold = create_dataset_fold(custom_dataset.ImageDataset, imgs_path, id_channel, kfold_train_val_test,
+                                   img_transform_train)
+dataset_fold_ref = create_dataset_fold(custom_dataset.ImageDataset_Ref, imgs_path, id_channel, kfold_train_val_test,
+                                       img_transform_train)
 # ### I) Memory usage per fold
 
 # def fold_memory_usage(fold:int, split:str ="train", batch_size:int=None):
@@ -465,6 +467,9 @@ import resource
 soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
 resource.setrlimit(resource.RLIMIT_NOFILE, (hard, hard))
 
-trainer.fit(lit_model, DataLoader(dataset_fold[fold]["train"], batch_size=batch_size,
-                                  num_workers=1, persistent_workers=True,
-                                  shuffle=True))
+trainer.fit(lit_model, train_dataloaders=[DataLoader(dataset_fold[fold]["train"], batch_size=batch_size,
+                                                     num_workers=1, persistent_workers=True,
+                                                     shuffle=True),
+                                          DataLoader(dataset_fold_ref[fold]["train"], batch_size=batch_size,
+                                                     num_workers=1, persistent_workers=True,
+                                                     shuffle=True)])
