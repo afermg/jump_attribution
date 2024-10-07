@@ -9,7 +9,7 @@ import torch.nn as nn
 import torch.optim as optim
 import torchvision
 
-from torch.nn.functional import cross_entropy, l1_loss
+from torch.nn.functional import cross_entropy, l1_loss, binary_cross_entropy_with_logits
 
 
 ## WORK WITH TORCH METRIC FROM LIGHTNING INSTEAD
@@ -702,6 +702,7 @@ class LightningStarGANV2(L.LightningModule):
             adam_param_m,
             adam_param_s,
             adam_param_d,
+            weight_loss,
             beta_moving_avg,
             n_class,
             apply_softmax=False
@@ -728,6 +729,7 @@ class LightningStarGANV2(L.LightningModule):
         self.adam_param_d = adam_param_d
 
         # Exponential Moving Average to stabilize the training of GANs
+        self.weight_loss = weight_loss
         self.beta_moving_avg = beta_moving_avg
         self.n_class = n_class
 
@@ -740,33 +742,102 @@ class LightningStarGANV2(L.LightningModule):
         self.d_loss_L = []
         self.cycle_loss_L = []
 
-    def cycle_loss(self, x, x_cycle):
-        return l1_loss(x, x_cycle)
+    def l1_loss(self, input1, input2):
+        return l1_loss(input1, input2)
 
-    def adversarial_loss(self, y_hat, y):
-        return cross_entropy(y_hat, y)
+    def adv_loss(self, y_hat, y):
+        assert target in [1, 0]
+        targets = torch.full_like(y_hat, fill_value=y)
+        return binary_cross_entropy_with_logits(y_hat, targets)
 
-    def reshape_vector(self, x):
-        """
-        Expect x to have the following dimension 1D: N_features
-        """
-        return x.reshape(1, self.H_target_shape, -1)
+    def r1_reg(self, d_out, x_in):
+        batch_size = x_in.size(0)
+        grad_dout = torch.autograd.grad(
+            outputs=d_out.sum(), inputs=x_in,
+            create_graph=True, retain_graph=True)[0]
+        grad_dout2 = grad_dout.pow(2)
+        assert(grad_dout2.size() == x_in.size())
+        reg = 0.5 * grad_dout2.view(batch_size, -1).sum(1).mean(0)
+        return reg
 
-##### NB, these moving average over parameters and copy of parameters only average weights and bias. It does not take into account
-##### Batch Normalization layers ! For a more general implementation, maybe it would be interesting to implement this:
-##### https://github.com/yasinyazici/EMA_GAN/blob/master/common/misc.py#L64
-##### from the paper THE UNUSUAL EFFECTIVENESS OF AVERAGING IN GAN TRAINING Yasin Yazıcı et al. 2019
+    def compute_d_loss(self, x_real, y_org, y_trg, z_trg=None, x_ref=None):
+        assert (z_trg is None) != (x_ref is None)
+        # with real images
+        x_real.requires_grad_()
+        out = self.discriminator(x_real, y_org)
+        loss_real = self.adv_loss(out, 1)
+        loss_reg = self.r1_reg(out, x_real)
 
-    def exponential_moving_average(self, model):
+        # with fake images
+        with torch.no_grad():
+            if z_trg is not None:
+                s_trg = self.mapping_network(z_trg, y_trg)
+            else:  # x_ref is not None
+                s_trg = self.style_encoder(x_ref, y_trg)
+
+            x_fake = self.generator(x_real, s_trg)
+        out = self.discriminator(x_fake, y_trg)
+        loss_fake = self.adv_loss(out, 0)
+
+        loss = loss_real + loss_fake + self.weight_loss.lambda_reg * loss_reg
+        return loss, {"real":loss_real.item(),
+                      "fake":loss_fake.item(),
+                      "reg":loss_reg.item()}
+
+    def compute_g_loss(self, args, x_real, y_org, y_trg, z_trgs=None, x_refs=None):
+        assert (z_trgs is None) != (x_refs is None)
+        if z_trgs is not None:
+            z_trg, z_trg2 = z_trgs
+        if x_refs is not None:
+            x_ref, x_ref2 = x_refs
+
+        # adversarial loss
+        if z_trgs is not None:
+            s_trg = self.mapping_network(z_trg, y_trg)
+        else:
+            s_trg = self.style_encoder(x_ref, y_trg)
+
+        x_fake = self.generator(x_real, s_trg)
+        out = self.discriminator(x_fake, y_trg)
+        loss_adv = self.adv_loss(out, 1)
+
+        # style reconstruction loss
+        s_pred = self.style_encoder(x_fake, y_trg)
+        loss_sty = self.l1_loss(s_pred - s_trg)
+
+        # diversity sensitive loss
+        if z_trgs is not None:
+            s_trg2 = self.mapping_network(z_trg2, y_trg)
+        else:
+            s_trg2 = self.style_encoder(x_ref2, y_trg)
+        x_fake2 = self.generator(x_real, s_trg2)
+        x_fake2 = x_fake2.detach()
+        loss_ds = self.l1_loss(x_fake - x_fake2)
+
+        # cycle-consistency loss
+        s_org = self.style_encoder(x_real, y_org)
+        x_rec = self.generator(x_fake, s_org)
+        loss_cyc = torch.mean(torch.abs(x_rec - x_real))
+
+        loss = loss_adv + self.weight_loss.lambda_sty * loss_sty \
+            - self.weight_loss.lambda_ds * loss_ds + self.weight_loss.lambda_cyc * loss_cyc
+        return loss, {"adv":loss_adv.item(),
+                      "sty":loss_sty.item(),
+                      "ds":loss_ds.item(),
+                      "cyc":loss_cyc.item()}
+
+
+
+    def exponential_moving_average(self, model, ema_model_weight, key):
         """Update the EMA model's parameters with an exponential moving average"""
-        for param, ema_param in zip(model.parameters(), self.generator_ema_weight):
+        for param, ema_param in zip(model.parameters(), ema_model_weight):
             # in place modif of ema_param with : ema_param * 0.999 + 0.001 * param
-            ema_param.data.mul_(self.beta_moving_avg).add_((1 - self.beta_moving_avg) * param.data.cpu())
+            ema_param.data.mul_(self.beta_moving_avg[key]).add_((1 - self.beta_moving_avg[key]) * param.data.cpu())
 
-    def copy_parameters_from_ema(self, target_model):
-        """Copy the parameters of a model to another model"""
-        for param, target_param in zip(self.generator_ema_weight, target_model.parameters()):
-            target_param.data.copy_(param.data)
+    def copy_parameters_from_ema(self, model, ema_model_weight):
+        """Copy the parameters of a ema_model_weight into model"""
+        for param, ema_param in zip(model.parameters(), ema_model_weight):
+            param.data.copy_(ema_param.data)
 
     def training_step(self, batch, batch_idx):
         x, y = batch
@@ -888,5 +959,8 @@ class LightningStarGANV2(L.LightningModule):
 
     def configure_optimizers(self):
         opt_g = torch.optim.Adam(self.generator.parameters(), **self.adam_param_g)
+        opt_m = torch.optim.Adam(self.mapping_network.parameters(), **self.adam_param_m)
+        opt_s = torch.optim.Adam(self.style_encoder.parameters(), **self.adam_param_s)
         opt_d = torch.optim.Adam(self.discriminator.parameters(), **self.adam_param_d)
-        return [opt_g, opt_d], []
+        return [opt_g, opt_m, opt_s, opt_d], []
+
