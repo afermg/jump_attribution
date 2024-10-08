@@ -705,8 +705,7 @@ class LightningStarGANV2(L.LightningModule):
             weight_loss,
             beta_moving_avg,
             n_class,
-            apply_softmax=False
-
+            latent_dim,
     ):
         super().__init__()
         self.save_hyperparameters(ignore=["generator","mapping_network", "style_encoder", "discriminator"])
@@ -732,11 +731,11 @@ class LightningStarGANV2(L.LightningModule):
         self.weight_loss = weight_loss
         self.beta_moving_avg = beta_moving_avg
         self.n_class = n_class
+        self.latent_dim = latent_dim
 
         # Accuracy
         self.train_accuracy_true = MulticlassAccuracy(num_classes=self.n_class, average="macro")
         self.train_accuracy_fake = MulticlassAccuracy(num_classes=self.n_class, average="macro")
-        self.apply_softmax = apply_softmax
         self.adv_loss_L = []
         self.sty_loss_L = []
         self.d_loss_L = []
@@ -745,9 +744,9 @@ class LightningStarGANV2(L.LightningModule):
     def l1_loss(self, input1, input2):
         return l1_loss(input1, input2)
 
-    def adv_loss(self, y_hat, y):
+    def adv_loss(self, y_hat, target):
         assert target in [1, 0]
-        targets = torch.full_like(y_hat, fill_value=y)
+        targets = torch.full_like(y_hat, fill_value=target)
         return binary_cross_entropy_with_logits(y_hat, targets)
 
     def r1_reg(self, d_out, x_in):
@@ -776,6 +775,7 @@ class LightningStarGANV2(L.LightningModule):
                 s_trg = self.style_encoder(x_ref, y_trg)
 
             x_fake = self.generator(x_real, s_trg)
+
         out = self.discriminator(x_fake, y_trg)
         loss_fake = self.adv_loss(out, 0)
 
@@ -783,6 +783,7 @@ class LightningStarGANV2(L.LightningModule):
         return loss, {"real":loss_real.item(),
                       "fake":loss_fake.item(),
                       "reg":loss_reg.item()}
+
 
     def compute_g_loss(self, args, x_real, y_org, y_trg, z_trgs=None, x_refs=None):
         assert (z_trgs is None) != (x_refs is None)
@@ -811,13 +812,14 @@ class LightningStarGANV2(L.LightningModule):
         else:
             s_trg2 = self.style_encoder(x_ref2, y_trg)
         x_fake2 = self.generator(x_real, s_trg2)
+        # if not detach, the gradient accumulation due to x_fake2 is exactly x_fake. This term would therefore be useless.
         x_fake2 = x_fake2.detach()
         loss_ds = self.l1_loss(x_fake - x_fake2)
 
         # cycle-consistency loss
         s_org = self.style_encoder(x_real, y_org)
         x_rec = self.generator(x_fake, s_org)
-        loss_cyc = torch.mean(torch.abs(x_rec - x_real))
+        loss_cyc = self.l1_loss(x_rec - x_real)
 
         loss = loss_adv + self.weight_loss.lambda_sty * loss_sty \
             - self.weight_loss.lambda_ds * loss_ds + self.weight_loss.lambda_cyc * loss_cyc
@@ -826,6 +828,33 @@ class LightningStarGANV2(L.LightningModule):
                       "ds":loss_ds.item(),
                       "cyc":loss_cyc.item()}
 
+
+    def set_requires_grad(self, models, value=True):
+        """Sets `requires_grad` on a `model`'s parameters to `value`
+        Takes list of nn.module or single nn.module"""
+        if type(models) != list:
+            for param in models.parameters():
+                param.requires_grad = value
+        else:
+            for model in models:
+                for param in model.parameters():
+                    param.requires_grad = value
+
+    def set_zero_grad(self, opts):
+        """Reset grad of opt in opts. Takes list of opts  or single otp"""
+        if type(opts) != list:
+            opts.zero_grad()
+        else:
+            for opt in opts:
+                opt.zero_grad()
+
+    def do_step(self, opts):
+        """Do step of opt in opts. Takes list of opts or single otp"""
+        if type(opts) != list:
+            opts.step()
+        else:
+            for opt in opts:
+                opt.step()
 
 
     def exponential_moving_average(self, model, ema_model_weight, key):
@@ -840,60 +869,51 @@ class LightningStarGANV2(L.LightningModule):
             param.data.copy_(ema_param.data)
 
     def training_step(self, batch, batch_idx):
-        x, y = batch
-        # Create target and style image
-        batch_size = len(y)
-        random_index = torch.randperm(batch_size)
-        x_style = x[random_index].clone()
-        y_target = y[random_index].clone()
+        # Get org image, trg domain, style vector
+        [[x, y_org], [x_ref1, x_ref2, y_trg]] = batch
+        z_trg, z_trg2 = torch.randn(x.size(0), self.latent_dim), torch.randn(x.size(0), self.latent_dim)
 
-        # Fetch the optimizers
-        optimizer_g, optimizer_d = self.optimizers()
-        # Train generator
-        # Disable grad
-        self.toggle_optimizer(optimizer_g) #Require grad
-        optimizer_g.zero_grad()
-        # Generate images
-        x_fake = self.generator(x, x_style)
-        x_cycle = self.generator(x_fake, x)
-        # Discriminate
-        discriminator_x_fake = self.discriminator(x_fake)
+        # Get optimizers
+        opt_g, opt_m, opt_s, opt_d = self.optimizers()
 
-        # Losses to  train the generator
-        # 1. make sure the image can be reconstructed
-        cycle_loss = self.cycle_loss(x, x_cycle)
-        # 2. make sure the discriminator is fooled
-        adv_loss = self.adversarial_loss(discriminator_x_fake, y_target)
-        # Total g_loss
-        g_loss = cycle_loss + adv_loss
-        # Optimize the generator
+        # train the discriminator
+        # There is actually no need to set grad to False as we are not making any opt step anyway. It however save compute time and memory.
+        self.set_requires_grad([self.generator, self.mapping_network, self.style_encoder], False)
+        self.set_requires_grad(self.discriminator, True)
+        d_loss, d_losses_latent = self.compute_d_loss(
+            nets, args, x_real, y_org, y_trg, z_trg=z_trg)
+        self.set_zero_grad(opt_d)
+        self.manual_backward(d_loss)
+        self.do_step(opt_d)
+
+        d_loss, d_losses_ref = self.compute_d_loss(
+            nets, args, x_real, y_org, y_trg, x_ref=x_ref)
+        self.set_zero_grad(opt_d)
+        self.manual_backward(d_loss)
+        self.do_step(opt_d)
+
+        # train the generator
+        self.set_requires_grad([self.generator, self.mapping_network, self.style_encoder], True)
+        self.set_requires_grad(self.discriminator, False)
+        g_loss, g_losses_latent = compute_g_loss(
+            nets, args, x_real, y_org, y_trg, z_trgs=[z_trg, z_trg2])
+        self.set_zero_grad([opt_g, opt_m, opt_s])
         self.manual_backward(g_loss)
-        optimizer_g.step()
-        self.untoggle_optimizer(optimizer_g) #Disable grad
+        self.do_step([opt_g, opt_m, opt_s])
 
-        # Train Discriminator
-        self.toggle_optimizer(optimizer_d) #Require grad
-        optimizer_d.zero_grad()
-        # Discriminate
-        discriminator_x = self.discriminator(x)
-        discriminator_x_fake = self.discriminator(x_fake.detach())
-        # Losses to train the discriminator
-        # 1. make sure the discriminator can tell real is real
-        real_loss = self.adversarial_loss(discriminator_x, y)
-        # 2. make sure the discriminator can tell fake is fake
-        fake_loss = -self.adversarial_loss(discriminator_x_fake, y_target)
-        # Total d_loss
-        d_loss = (real_loss + fake_loss) * 0.5
+        g_loss, g_losses_ref = compute_g_loss(
+            nets, args, x_real, y_org, y_trg, x_refs=[x_ref, x_ref2])
+        self.set_zero_grad([opt_g, opt_m, opt_s])
+        self.manual_backward(g_loss)
+        self.do_step([opt_g, opt_m, opt_s])
+
+
         # compute accuracy
         if self.apply_softmax:
             discriminator_x = nn.Softmax(dim=1)(discriminator_x)
             discriminator_x_fake = nn.Softmax(dim=1)(discriminator_x_fake)
         self.train_accuracy_true.update(discriminator_x, y)
         self.train_accuracy_fake.update(discriminator_x_fake, y_target)
-        # Optimize the discriminator
-        self.manual_backward(d_loss)
-        optimizer_d.step()
-        self.untoggle_optimizer(optimizer_d) #Disable grad
 
         # Store loss for logging later on
         self.cycle_loss_L.append(cycle_loss * batch_size)
@@ -964,3 +984,66 @@ class LightningStarGANV2(L.LightningModule):
         opt_d = torch.optim.Adam(self.discriminator.parameters(), **self.adam_param_d)
         return [opt_g, opt_m, opt_s, opt_d], []
 
+
+import torch
+import torch.nn as nn
+from torch.nn.functional import cross_entropy, l1_loss, binary_cross_entropy_with_logits
+torch.manual_seed(42)
+generator = nn.Linear(4, 10)
+discriminator = nn.Linear(10, 1)
+x_real = torch.tensor([[1, 1, 1, 1],
+                       [2, 2, 2, 2]],
+                      requires_grad=False,
+                      dtype=torch.float)
+
+def adv_loss(y_hat, target):
+    assert target in [1, 0]
+    targets = torch.full_like(y_hat, fill_value=target)
+    return binary_cross_entropy_with_logits(y_hat, targets)
+
+
+def set_requires_grad(model, value=True):
+    """Sets `requires_grad` on a `model`'s parameters to `value`"""
+    for param in model.parameters():
+        param.requires_grad = value
+
+def print_grad(module):
+    for param in module.parameters():
+        print(param.grad)
+set_requires_grad(discriminator, False)
+x_fake = generator(x_real)
+out = discriminator(x_fake)
+loss_adv = adv_loss(out, 1)
+loss_adv.backward()
+
+print(x_real.grad)
+print_grad(generator)
+print_grad(discriminator)
+
+if type([generator]) != list:
+    print("yes")
+else:
+    print("good")
+class Test:
+    def __init__(self, model):
+        self.model = model
+
+    def apply_requires_grad(self, value):
+        self.set_requires_grad(self.model, value)
+
+    def set_requires_grad(self, model, value=True):
+        """Sets `requires_grad` on a `model`'s parameters to `value`"""
+        for param in model.parameters():
+            param.requires_grad = value
+
+    def print_grad(self):
+        for param in self.model.parameters():
+            print(param.requires_grad)
+
+class_test = Test(generator)
+
+class_test.print_grad()
+class_test.apply_requires_grad(False)
+class_test.print_grad()
+class_test.set_requires_grad(class_test.model, True)
+class_test.print_grad()
