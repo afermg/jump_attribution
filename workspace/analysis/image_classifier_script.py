@@ -411,9 +411,9 @@ os.environ["NCCL_P2P_DISABLE"] = "1"
 
 fold=0
 # # Lightning Training
-tb_logger = pl_loggers.TensorBoardLogger(save_dir=Path("logs"), name="GAN_image_active")
+tb_logger = pl_loggers.TensorBoardLogger(save_dir=Path("logs"), name="StarGANv2_image_active")
 checkpoint_callback = ModelCheckpoint(dirpath=Path("lightning_checkpoint_log"),
-                                      filename=f"GAN_image_active_fold_{fold}_"+"{epoch}-{train_acc_true:.2f}-{train_acc_fake:.2f}",
+                                      filename=f"StarGANv2_image_active_fold_{fold}_"+"{epoch}-{train_acc_true:.2f}-{train_acc_fake:.2f}",
                                       #save_top_k=1,
                                       #monitor="val_acc",
                                       #mode="max",
@@ -422,44 +422,43 @@ checkpoint_callback = ModelCheckpoint(dirpath=Path("lightning_checkpoint_log"),
 torch.set_float32_matmul_precision('medium') #try 'high')
 seed_everything(42, workers=True)
 
+img_size = 448
 max_epoch = 30
-lit_model = LightningGANV2(
-    conv_model.UNetAdaIN, # inner_generator,
-    conv_model.VGG_ch, # style_encoder,
-    conv_model.ImgGeneratorV3, # generator,
-    conv_model.VGG_ch, # discriminator,
-    {"depth":5, "style_dim": 1000, "in_channels":len(channel), "out_channels":len(channel), "final_activation": nn.Sigmoid(),
-     "num_fmaps":32, "fmap_inc_factor":2, "max_fmaps": 512, "downsample_factor":2, "kernel_size":3, "padding":"same",
-     "upsample_mode":"nearest", "ada_in": "learned"}, # inner_generator_param,
-    {"img_depth":len(channel), "img_size":448, "lab_dim":1000, "conv_n_ch":16,
-     "n_conv_block":7, "n_conv_list":[1, 1, 2, 2, 3, 3, 3], "n_lin_block":1, "p_dropout":0.2}, # style_encoder_param,
-    {"batchnorm_dim": 0}, #generator_param,
-    {"img_depth":len(channel), "img_size":448, "lab_dim":4, "conv_n_ch":16,
-     "n_conv_block":7, "n_conv_list":[1, 1, 2, 2, 3, 3, 3], "n_lin_block":2, "p_dropout":0.2}, # discriminator_param,
-    {"lr": 1e-5}, # adam_param_g,
-    {"lr": 5e-4}, # adam_param_d,
-    0.1, # beta_moving_avg, 0.8 pretty bad (discriminator is too strong and the generator is not updated quick enough.)
-    4, #n_class
-    False, # if_reshape_vector=False,
-    None, # H_target_shape=None
-    True) # apply_softmax=False
+latent_dim = 16
+style_dim = 64
+lit_model = LightningStarGANV2(
+    conv_model.Generator, # generator
+    conv_model.MappingNetwork, # mapping_network
+    conv_model.StyleEncoder, # style_encoder
+    conv_model.Discriminator, # discriminator
+    {"num_channels": len(channel), "dim_in": 64, "style_dim": style_dim, "num_block": 4, "max_conv_dim": 512}, # generator_param
+    {"latent_dim": latent_dim, "style_dim": 64, "num_domain": 2}, # mapping_network
+    {"img_size": img_size, "num_channels": len(channel), "dim_in": 64, "style_dim": style_dim, "num_block": 4, "max_conv_dim": 512}, # style_encoder_param
+    {"img_size": img_size, "num_channels": len(channel), "dim_in": 64, "style_dim": style_dim, "num_block": 4, "max_conv_dim": 512}, # discriminator_param,
+    {"lr": 1e-4, "betas": (0, 0.99)}, # adam_param_g G
+    {"lr": 1e-6, "betas": (0, 0.99)}, # adam_param_m F
+    {"lr": 1e-4, "betas": (0, 0.99)}, # adam_param_s E
+    {"lr": 1e-4, "betas": (0, 0.99)}, # adam_param_d D
+    {"lambda_cyc": 1,  "lambda_sty": 1, "lambda_ds": 1, "lambda_reg": 1}, # weight_loss (eventually tweak lambda_ds (original authors set it to 1 for CelebaHQ and 2 for AFHQ))
+    {"generator": 0.999,"mapping_network": 0.999, "style_encoder": 0.999}, # beta_moving_avg (Looks 0.99 to 0.999 looks to have better behavior)
+    latent_dim)# latent_dim
 
-batch_size = 16 #len(dataset_fold[fold]["train"])
+batch_size = 8 #len(dataset_fold[fold]["train"])
 
 # from lightning.pytorch.strategies import DDPStrategy
 
 trainer = L.Trainer(
                     accelerator="gpu",
-                    devices=2,
+                    devices=1,
                     #precision=16,
                     #strategy="ddp_notebook",
-                    strategy="ddp_find_unused_parameters_true",#DDPStrategy(static_graph=True)
+                    #strategy="ddp_find_unused_parameters_true",#DDPStrategy(static_graph=True)
                     max_epochs=max_epoch,
                     logger=tb_logger,
                     #num_sanity_val_steps=2, #to use only if you know the trainer is working !
                     callbacks=[checkpoint_callback],
                     #enable_checkpointing=False,
-                    enable_progress_bar=False,
+                    enable_progress_bar=True,
                     #profiler="simple"
                     )
 
@@ -469,7 +468,7 @@ resource.setrlimit(resource.RLIMIT_NOFILE, (hard, hard))
 
 trainer.fit(lit_model, train_dataloaders=[DataLoader(dataset_fold[fold]["train"], batch_size=batch_size,
                                                      num_workers=1, persistent_workers=True,
-                                                     shuffle=True),
+                                                     shuffle=True, drop_last=True),
                                           DataLoader(dataset_fold_ref[fold]["train"], batch_size=batch_size,
                                                      num_workers=1, persistent_workers=True,
-                                                     shuffle=True)])
+                                                     shuffle=True, drop_last=True)])
