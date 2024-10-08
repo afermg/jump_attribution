@@ -42,7 +42,7 @@ class ImageDataset_Ref(Dataset):
         rng = np.random.default_rng(42)
         return list(map(lambda list_idx: np.concatenate(list_idx),
                         list(zip(*[(group_idx,
-                                    rng.choice(group_idx, size=len(group_idx), replace=True))
+                                    rng.choice(group_idx, size=len(group_idx), replace=False))
                                    for group_idx in list(domain_idx.values())]))))
 
     def __len__(self):
