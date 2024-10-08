@@ -9,7 +9,7 @@ import torch.nn as nn
 import torch.optim as optim
 import torchvision
 
-from torch.nn.functional import cross_entropy, l1_loss, binary_cross_entropy_with_logits
+from torch.nn.functional import cross_entropy, l1_loss, binary_cross_entropy_with_logits, sigmoid
 
 
 ## WORK WITH TORCH METRIC FROM LIGHTNING INSTEAD
@@ -759,6 +759,11 @@ class LightningStarGANV2(L.LightningModule):
         reg = 0.5 * grad_dout2.view(batch_size, -1).sum(1).mean(0)
         return reg
 
+    def update_accuracy(self, accuracy, out):
+        out_logit = sigmoid(out)
+        targets = torch.full_like(out_logit, fill_value=1)
+        accuracy.update(out_logit, targets)
+
     def compute_d_loss(self, x_real, y_org, y_trg, z_trg=None, x_ref=None):
         assert (z_trg is None) != (x_ref is None)
         # with real images
@@ -766,6 +771,10 @@ class LightningStarGANV2(L.LightningModule):
         out = self.discriminator(x_real, y_org)
         loss_real = self.adv_loss(out, 1)
         loss_reg = self.r1_reg(out, x_real)
+
+        # update accuracy only once per batch.
+        if x_ref is not None:
+            self.update_accuracy(self.train_accuracy_true, out)
 
         # with fake images
         with torch.no_grad():
@@ -802,6 +811,10 @@ class LightningStarGANV2(L.LightningModule):
         out = self.discriminator(x_fake, y_trg)
         loss_adv = self.adv_loss(out, 1)
 
+        # update accuracy only once per batch.
+        if x_refs is not None:
+            self.update_accuracy(self.train_accuracy_fake, out)
+
         # style reconstruction loss
         s_pred = self.style_encoder(x_fake, y_trg)
         loss_sty = self.l1_loss(s_pred - s_trg)
@@ -827,7 +840,6 @@ class LightningStarGANV2(L.LightningModule):
                       "sty":loss_sty.item(),
                       "ds":loss_ds.item(),
                       "cyc":loss_cyc.item()}
-
 
     def set_requires_grad(self, models, value=True):
         """Sets `requires_grad` on a `model`'s parameters to `value`
@@ -856,28 +868,27 @@ class LightningStarGANV2(L.LightningModule):
             for opt in opts:
                 opt.step()
 
-
-    def exponential_moving_average(self, model, ema_model_weight, key):
+    def exponential_moving_average(self, model, model_ema_weight, key):
         """Update the EMA model's parameters with an exponential moving average"""
-        for param, ema_param in zip(model.parameters(), ema_model_weight):
+        for param, param_ema in zip(model.parameters(), model_ema_weight):
             # in place modif of ema_param with : ema_param * 0.999 + 0.001 * param
-            ema_param.data.mul_(self.beta_moving_avg[key]).add_((1 - self.beta_moving_avg[key]) * param.data.cpu())
+            param_ema.data = torch.lerp(param.cpu(), param_ema, self.beta_moving_avg[key])
 
-    def copy_parameters_from_ema(self, model, ema_model_weight):
-        """Copy the parameters of a ema_model_weight into model"""
-        for param, ema_param in zip(model.parameters(), ema_model_weight):
-            param.data.copy_(ema_param.data)
+    def copy_parameters_from_ema(self, model, model_ema_weight):
+        """Copy the parameters of a model_ema_weight into model"""
+        for param, param_ema in zip(model.parameters(), model_ema_weight):
+            param.data.copy_(param_ema.data)
 
     def training_step(self, batch, batch_idx):
-        # Get org image, trg domain, style vector
-        [[x, y_org], [x_ref1, x_ref2, y_trg]] = batch
+        # get org image, trg domain, style vector
+        [[x, y_org], [x_ref, x_ref2, y_trg]] = batch
         z_trg, z_trg2 = torch.randn(x.size(0), self.latent_dim), torch.randn(x.size(0), self.latent_dim)
 
-        # Get optimizers
+        # get optimizers
         opt_g, opt_m, opt_s, opt_d = self.optimizers()
 
         # train the discriminator
-        # There is actually no need to set grad to False as we are not making any opt step anyway. It however save compute time and memory.
+        # there is actually no need to set grad to False as we are not making any opt step anyway. It however save compute time and memory.
         self.set_requires_grad([self.generator, self.mapping_network, self.style_encoder], False)
         self.set_requires_grad(self.discriminator, True)
         d_loss, d_losses_latent = self.compute_d_loss(
@@ -908,74 +919,70 @@ class LightningStarGANV2(L.LightningModule):
         self.do_step([opt_g, opt_m, opt_s])
 
 
-        # compute accuracy
-        if self.apply_softmax:
-            discriminator_x = nn.Softmax(dim=1)(discriminator_x)
-            discriminator_x_fake = nn.Softmax(dim=1)(discriminator_x_fake)
-        self.train_accuracy_true.update(discriminator_x, y)
-        self.train_accuracy_fake.update(discriminator_x_fake, y_target)
+        # moving average
+        self.exponential_moving_average(self.generator, self.generator_ema_weight, "generator")
+        self.exponential_moving_average(self.mapping_network, self.mapping_network_ema_weight, "mapping_network")
+        self.exponential_moving_average(self.style_encoder, self.style_encoder_ema_weight, "style_encoder")
 
-        # Store loss for logging later on
-        self.cycle_loss_L.append(cycle_loss * batch_size)
-        self.adv_loss_L.append(adv_loss * batch_size)
-        self.d_loss_L.append(d_loss * batch_size)
+        # # store loss for logging later on
+        # self.cycle_loss_L.append(cycle_loss * batch_size)
+        # self.adv_loss_L.append(adv_loss * batch_size)
+        # self.d_loss_L.append(d_loss * batch_size)
 
-        if batch_idx == 0 and ((self.current_epoch % 1 == 0 and self.current_epoch > 0) or (self.current_epoch == self.trainer.max_epochs - 1)):
-            if self.trainer.is_global_zero:
-                self.log_images_with_colormap(x, x_style, x_fake, x_cycle, y, y_target, num=4)
+        # if batch_idx == 0 and ((self.current_epoch % 1 == 0 and self.current_epoch > 0) or (self.current_epoch == self.trainer.max_epochs - 1)):
+        #     if self.trainer.is_global_zero:
+        #         self.log_images_with_colormap(x, x_style, x_fake, x_cycle, y, y_target, num=4)
 
-        self.exponential_moving_average(self.generator)
 
     def on_train_epoch_end(self):
-        self.copy_parameters_from_ema(self.generator)
         self.log("train_acc_true", self.train_accuracy_true.compute(), on_epoch=True, sync_dist=True)
         self.log("train_acc_fake", self.train_accuracy_fake.compute(), on_epoch=True, sync_dist=True)
         self.train_accuracy_true.reset()
         self.train_accuracy_fake.reset()
 
-        cycle_loss_epoch = torch.sum(torch.cat(self.all_gather(self.cycle_loss_L), dim=0)) / len(self.trainer.train_dataloader.dataset)
-        adv_loss_epoch = torch.sum(torch.cat(self.all_gather(self.adv_loss_L), dim=0)) / len(self.trainer.train_dataloader.dataset)
-        d_loss_epoch = torch.sum(torch.cat(self.all_gather(self.d_loss_L), dim=0)) / len(self.trainer.train_dataloader.dataset)
-        if self.trainer.is_global_zero:
-            self.log("cycle_loss_epoch", cycle_loss_epoch, logger=True, rank_zero_only=True)
-            self.log("adv_loss_epoch", adv_loss_epoch, logger=True, rank_zero_only=True)
-            self.log("d_loss_epoch", d_loss_epoch, logger=True, rank_zero_only=True)
-        self.cycle_loss_L = []
-        self.adv_loss_L = []
-        self.d_loss_L = []
-        del cycle_loss_epoch, adv_loss_epoch, d_loss_epoch
+        # cycle_loss_epoch = torch.sum(torch.cat(self.all_gather(self.cycle_loss_L), dim=0)) / len(self.trainer.train_dataloader.dataset)
+        # adv_loss_epoch = torch.sum(torch.cat(self.all_gather(self.adv_loss_L), dim=0)) / len(self.trainer.train_dataloader.dataset)
+        # d_loss_epoch = torch.sum(torch.cat(self.all_gather(self.d_loss_L), dim=0)) / len(self.trainer.train_dataloader.dataset)
+        # if self.trainer.is_global_zero:
+        #     self.log("cycle_loss_epoch", cycle_loss_epoch, logger=True, rank_zero_only=True)
+        #     self.log("adv_loss_epoch", adv_loss_epoch, logger=True, rank_zero_only=True)
+        #     self.log("d_loss_epoch", d_loss_epoch, logger=True, rank_zero_only=True)
+        # self.cycle_loss_L = []
+        # self.adv_loss_L = []
+        # self.d_loss_L = []
+        # del cycle_loss_epoch, adv_loss_epoch, d_loss_epoch
 
 
-    def log_images_with_colormap(self, x, x_style, x_fake, x_cycle, y, y_target, num=4):
-        fig, axs = plt.subplots(num, 4, figsize=(15, 20), squeeze=False)
-        # Convert tensors to NumPy
-        for i in range(num):
-            input_img = x[i]
-            style_img = x_style[i]
-            fake_img = x_fake[i]
-            cycled_img = x_cycle[i]
-            input_class = y[i]
-            style_class = y_target[i]
-            if self.if_reshape_vector:
-                input_img = self.reshape_vector(input_img)
-                style_img = self.reshape_vector(style_img)
-                fake_img = self.reshape_vector(fake_img)
-                cycled_img = self.reshape_vector(cycled_img)
+    # def log_images_with_colormap(self, x, x_style, x_fake, x_cycle, y, y_target, num=4):
+    #     fig, axs = plt.subplots(num, 4, figsize=(15, 20), squeeze=False)
+    #     # Convert tensors to NumPy
+    #     for i in range(num):
+    #         input_img = x[i]
+    #         style_img = x_style[i]
+    #         fake_img = x_fake[i]
+    #         cycled_img = x_cycle[i]
+    #         input_class = y[i]
+    #         style_class = y_target[i]
+    #         if self.if_reshape_vector:
+    #             input_img = self.reshape_vector(input_img)
+    #             style_img = self.reshape_vector(style_img)
+    #             fake_img = self.reshape_vector(fake_img)
+    #             cycled_img = self.reshape_vector(cycled_img)
 
-            axs[i][0].imshow(input_img.cpu().permute(1, 2, 0).detach().numpy())
-            axs[i][0].set_title(f"Input image - Class_{input_class}")
-            axs[i][1].imshow(style_img.cpu().permute(1, 2, 0).detach().numpy())
-            axs[i][1].set_title(f"Style image - Class_{style_class}")
-            axs[i][2].imshow(fake_img.cpu().permute(1, 2, 0).detach().numpy())
-            axs[i][2].set_title(f"Generated image - Class_{style_class}")
-            axs[i][3].imshow(cycled_img.cpu().permute(1, 2, 0).detach().numpy())
-            axs[i][3].set_title(f"Cycled image - Class_{input_class}")
+    #         axs[i][0].imshow(input_img.cpu().permute(1, 2, 0).detach().numpy())
+    #         axs[i][0].set_title(f"Input image - Class_{input_class}")
+    #         axs[i][1].imshow(style_img.cpu().permute(1, 2, 0).detach().numpy())
+    #         axs[i][1].set_title(f"Style image - Class_{style_class}")
+    #         axs[i][2].imshow(fake_img.cpu().permute(1, 2, 0).detach().numpy())
+    #         axs[i][2].set_title(f"Generated image - Class_{style_class}")
+    #         axs[i][3].imshow(cycled_img.cpu().permute(1, 2, 0).detach().numpy())
+    #         axs[i][3].set_title(f"Cycled image - Class_{input_class}")
 
-        for ax in axs.flatten():
-            ax.axis("off")
-        # Save the figure as a TensorBoard image
-        self.logger.experiment.add_figure("train/generated_images", fig, self.current_epoch)
-        plt.close(fig)
+    #     for ax in axs.flatten():
+    #         ax.axis("off")
+    #     # Save the figure as a TensorBoard image
+    #     self.logger.experiment.add_figure("train/generated_images", fig, self.current_epoch)
+    #     plt.close(fig)
 
     def configure_optimizers(self):
         opt_g = torch.optim.Adam(self.generator.parameters(), **self.adam_param_g)
