@@ -31,7 +31,7 @@ class ImageDataset_Ref(Dataset):
         self.imgs_zarr = zarr.open(imgs_path)
         self.channel = channel
         self.fold_idx = fold_idx
-        self.imgs1_idx, self.imgs2_idx = self._make_dataset(seed)
+        self.imgs_idx, self.imgs2_idx = self._make_dataset(seed)
         self.img_transform = img_transform
         self.label_transform = label_transform
 
@@ -49,15 +49,15 @@ class ImageDataset_Ref(Dataset):
         return len(self.fold_idx)
 
     def __getitem__(self, idx):
-        imgs1 = self.imgs_zarr["imgs"].oindex[self.imgs1_idx[idx], self.channel]
+        imgs = self.imgs_zarr["imgs"].oindex[self.imgs_idx[idx], self.channel]
         imgs2 = self.imgs_zarr["imgs"].oindex[self.imgs2_idx[idx], self.channel]
-        labels = self.imgs_zarr["labels"].oindex[self.imgs1_idx[idx]]
+        labels = self.imgs_zarr["labels"].oindex[self.imgs_idx[idx]]
         if self.img_transform is not None:
-            imgs1 = self.img_transform(imgs1)
+            imgs = self.img_transform(imgs)
             imgs2 = self.img_transform(imgs2)
         if self.label_transform is not None:
             labels = self.label_transform(labels)
-        return imgs1, imgs2, labels
+        return imgs, imgs2, labels
 
 class RowDataset(Dataset):
     def __init__(self, row, labels, transform=None, target_transform=None):
