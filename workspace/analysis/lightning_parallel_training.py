@@ -14,7 +14,7 @@ from torch.nn.functional import cross_entropy, l1_loss, binary_cross_entropy_wit
 
 ## WORK WITH TORCH METRIC FROM LIGHTNING INSTEAD
 from torchmetrics.classification import (
-MulticlassAUROC, MulticlassAccuracy, MulticlassF1Score, MulticlassConfusionMatrix)
+    MulticlassAUROC, MulticlassAccuracy, MulticlassF1Score, MulticlassConfusionMatrix, BinaryAccuracy)
 
 
 
@@ -729,13 +729,15 @@ class LightningStarGANV2(L.LightningModule):
 
         # Exponential Moving Average to stabilize the training of GANs
         self.weight_loss = weight_loss
+        self.initial_lamda_ds = self.weight_loss.lambda_ds
         self.beta_moving_avg = beta_moving_avg
         self.n_class = n_class
         self.latent_dim = latent_dim
 
         # Accuracy
-        self.train_accuracy_true = MulticlassAccuracy(num_classes=self.n_class, average="macro")
-        self.train_accuracy_fake = MulticlassAccuracy(num_classes=self.n_class, average="macro")
+        self.train_accuracy_true = BinaryAccuracy()
+        self.train_accuracy_fake_latent = BinaryAccuracy()
+        self.train_accuracy_fake_ref = BinaryAccuracy()
         self.adv_loss_L = []
         self.sty_loss_L = []
         self.d_loss_L = []
@@ -811,9 +813,10 @@ class LightningStarGANV2(L.LightningModule):
         out = self.discriminator(x_fake, y_trg)
         loss_adv = self.adv_loss(out, 1)
 
-        # update accuracy only once per batch.
-        if x_refs is not None:
-            self.update_accuracy(self.train_accuracy_fake, out)
+        if z_trgs is not None:
+            self.update_accuracy(self.train_accuracy_fake_latent, out)
+        else:
+            self.update_accuracy(self.train_accuracy_fake_ref, out)
 
         # style reconstruction loss
         s_pred = self.style_encoder(x_fake, y_trg)
@@ -824,6 +827,7 @@ class LightningStarGANV2(L.LightningModule):
             s_trg2 = self.mapping_network(z_trg2, y_trg)
         else:
             s_trg2 = self.style_encoder(x_ref2, y_trg)
+           
         x_fake2 = self.generator(x_real, s_trg2)
         # if not detach, the gradient accumulation due to x_fake2 is exactly x_fake. This term would therefore be useless.
         x_fake2 = x_fake2.detach()
@@ -924,6 +928,19 @@ class LightningStarGANV2(L.LightningModule):
         self.exponential_moving_average(self.mapping_network, self.mapping_network_ema_weight, "mapping_network")
         self.exponential_moving_average(self.style_encoder, self.style_encoder_ema_weight, "style_encoder")
 
+        # linear decay of ds_iter (I assume it is to stabilise the generator training)
+        if self.weight_loss.lambda_ds > 0:
+            if self.current_step == 0 and batch_idx == 0:
+                self.lamda_ds_decay = len(self.trainer.train_dataloader[0]) * self.trainer.max_epochs
+            self.weight_loss.lambda_ds -= (self.initial_lambda_ds / self.lamda_ds_decay)
+
+        all_losses = {}
+        for loss, prefix in zip([d_losses_latent, d_losses_ref, g_losses_latent, g_losses_ref],
+                                        ['D/latent_', 'D/ref_', 'G/latent_', 'G/ref_']):
+            for key, value in loss.items():
+                all_losses[prefix + key] = value
+                all_losses['G/lambda_ds'] = args.lambda_ds
+        self.log_dict(all_losses, logger=True, batch_size=x.size(0), on_step=True, on_epoch=True, sync_dist=True)
         # # store loss for logging later on
         # self.cycle_loss_L.append(cycle_loss * batch_size)
         # self.adv_loss_L.append(adv_loss * batch_size)
@@ -936,10 +953,13 @@ class LightningStarGANV2(L.LightningModule):
 
     def on_train_epoch_end(self):
         self.log("train_acc_true", self.train_accuracy_true.compute(), on_epoch=True, sync_dist=True)
-        self.log("train_acc_fake", self.train_accuracy_fake.compute(), on_epoch=True, sync_dist=True)
+        self.log("train_acc_fake_latent", self.train_accuracy_fake_latent.compute(), on_epoch=True, sync_dist=True)
+        self.log("train_acc_fake_ref", self.train_accuracy_fake_ref.compute(), on_epoch=True, sync_dist=True)
         self.train_accuracy_true.reset()
-        self.train_accuracy_fake.reset()
+        self.train_accuracy_fake_latent.reset()
+        self.train_accuracy_fake_ref.reset()
 
+    """Need to generate images with ema model ! Also let's compute metrics with FID score (FID score later)"""
         # cycle_loss_epoch = torch.sum(torch.cat(self.all_gather(self.cycle_loss_L), dim=0)) / len(self.trainer.train_dataloader.dataset)
         # adv_loss_epoch = torch.sum(torch.cat(self.all_gather(self.adv_loss_L), dim=0)) / len(self.trainer.train_dataloader.dataset)
         # d_loss_epoch = torch.sum(torch.cat(self.all_gather(self.d_loss_L), dim=0)) / len(self.trainer.train_dataloader.dataset)
