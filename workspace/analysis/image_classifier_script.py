@@ -41,7 +41,7 @@ import lightning as L
 from parallel_training import run_train
 import conv_model
 import custom_dataset
-from lightning_parallel_training import LightningModelV2, LightningGANV2
+from lightning_parallel_training import LightningModelV2, LightningGANV2, LightningStarGANV2
 from lightning.pytorch import Trainer, seed_everything
 from lightning.pytorch import loggers as pl_loggers
 from lightning.pytorch.callbacks import ModelCheckpoint
@@ -216,17 +216,25 @@ def create_dataset_fold(Dataset, imgs_path, id_channel, kfold_train_val_test, im
                                  fold_idx=kfold_train_val_test[i][0],
                                  img_transform=v2.Compose([v2.Lambda(lambda img:
                                                                      torch.tensor(img, dtype=torch.float32)),
-                                                           img_transform_train]),
+                                                           img_transform_train,
+                                                           v2.Normalize(mean=len(channel)*[0.5],
+                                                                                std=len(channel)*[0.5])]),
                                  label_transform=lambda label: torch.tensor(label, dtype=torch.long)),
                 "val": Dataset(imgs_path,
                                channel=id_channel,
                                fold_idx=kfold_train_val_test[i][1],
-                               img_transform=lambda img: torch.tensor(img, dtype=torch.float32),
+                               img_transform=v2.Compose([v2.Lambda(lambda img:
+                                                                     torch.tensor(img, dtype=torch.float32)),
+                                                        v2.Normalize(mean=len(channel)*[0.5],
+                                                                     std=len(channel)*[0.5])]),
                                label_transform=lambda label: torch.tensor(label, dtype=torch.long)),
                 "test": Dataset(imgs_path,
                                 channel=id_channel,
                                 fold_idx=kfold_train_val_test[i][2],
-                                img_transform=lambda img: torch.tensor(img, dtype=torch.float32),
+                                img_transform=v2.Compose([v2.Lambda(lambda img:
+                                                                     torch.tensor(img, dtype=torch.float32)),
+                                                          v2.Normalize(mean=len(channel)*[0.5],
+                                                                       std=len(channel)*[0.5])]),
                                 label_transform=lambda label: torch.tensor(label, dtype=torch.long))}
             for i in fold_L}
 
@@ -409,32 +417,38 @@ GANs Training
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 os.environ["NCCL_P2P_DISABLE"] = "1"
 
+# Some parameter definition
 fold=0
+img_size = 448
+num_domains = 4 #n_class
+max_epoch = 1
+latent_dim = 16
+style_dim = 64
+
 # # Lightning Training
 tb_logger = pl_loggers.TensorBoardLogger(save_dir=Path("logs"), name="StarGANv2_image_active")
 checkpoint_callback = ModelCheckpoint(dirpath=Path("lightning_checkpoint_log"),
-                                      filename=f"StarGANv2_image_active_fold_{fold}_"+"{epoch}-{train_acc_true:.2f}-{train_acc_fake:.2f}",
+                                      filename=f"StarGANv2_image_active_fold_{fold}_"+"{epoch}-{step}", #-{train_acc_true:.2f}-{train_acc_fake:.2f}",
                                       #save_top_k=1,
                                       #monitor="val_acc",
                                       #mode="max",
-                                      every_n_epochs=2)
+                                      every_n_train_steps=50)
+                                      #every_n_epochs=1)
 
 torch.set_float32_matmul_precision('medium') #try 'high')
 seed_everything(42, workers=True)
 
-img_size = 448
-max_epoch = 30
-latent_dim = 16
-style_dim = 64
 lit_model = LightningStarGANV2(
     conv_model.Generator, # generator
     conv_model.MappingNetwork, # mapping_network
     conv_model.StyleEncoder, # style_encoder
     conv_model.Discriminator, # discriminator
     {"num_channels": len(channel), "dim_in": 64, "style_dim": style_dim, "num_block": 4, "max_conv_dim": 512}, # generator_param
-    {"latent_dim": latent_dim, "style_dim": 64, "num_domain": 2}, # mapping_network
-    {"img_size": img_size, "num_channels": len(channel), "dim_in": 64, "style_dim": style_dim, "num_block": 4, "max_conv_dim": 512}, # style_encoder_param
-    {"img_size": img_size, "num_channels": len(channel), "dim_in": 64, "style_dim": style_dim, "num_block": 4, "max_conv_dim": 512}, # discriminator_param,
+    {"latent_dim": latent_dim, "style_dim": 64, "num_domains": num_domains}, # mapping_network
+    {"img_size": img_size, "num_channels": len(channel), "num_domains": num_domains, "dim_in": 64, "style_dim": style_dim,
+     "num_block": 4, "max_conv_dim": 512}, # style_encoder_param
+    {"img_size": img_size, "num_channels": len(channel), "num_domains": num_domains, "dim_in": 64, "style_dim": style_dim,
+     "num_block": 4, "max_conv_dim": 512}, # discriminator_param,
     {"lr": 1e-4, "betas": (0, 0.99)}, # adam_param_g G
     {"lr": 1e-6, "betas": (0, 0.99)}, # adam_param_m F
     {"lr": 1e-4, "betas": (0, 0.99)}, # adam_param_s E
@@ -449,16 +463,17 @@ batch_size = 8 #len(dataset_fold[fold]["train"])
 
 trainer = L.Trainer(
                     accelerator="gpu",
-                    devices=1,
-                    #precision=16,
+                    devices=2,
+                    precision="bf16-mixed",
                     #strategy="ddp_notebook",
-                    #strategy="ddp_find_unused_parameters_true",#DDPStrategy(static_graph=True)
+                    strategy="ddp_find_unused_parameters_true",#DDPStrategy(static_graph=True)
                     max_epochs=max_epoch,
                     logger=tb_logger,
                     #num_sanity_val_steps=2, #to use only if you know the trainer is working !
                     callbacks=[checkpoint_callback],
                     #enable_checkpointing=False,
                     enable_progress_bar=True,
+                    log_every_n_steps=1
                     #profiler="simple"
                     )
 

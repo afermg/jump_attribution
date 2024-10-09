@@ -1,5 +1,7 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+import math
 from typing import Literal, Optional, Tuple
 
 class VGG(nn.Module):
@@ -138,8 +140,7 @@ class ResBlk(nn.Module):
         return x
 
     def forward(self, x):
-        x = self._shortcut(x) + self._residual(x)
-        return x / math.sqrt(2)  # unit variance
+        return (self._shortcut(x) + self._residual(x)) / math.sqrt(2)  # unit variance
 
 
 class AdaIN(nn.Module):
@@ -191,9 +192,7 @@ class AdainResBlk(nn.Module):
         return x
 
     def forward(self, x, s):
-        out = self._residual(x, s)
-        out = (out + self._shortcut(x)) / math.sqrt(2)
-        return out
+        return (self._residual(x, s) + self._shortcut(x)) / math.sqrt(2)
 
 
 
@@ -262,7 +261,7 @@ class MappingNetwork(nn.Module):
         for layer in self.unshared:
             out += [layer(h)]
         out = torch.stack(out, dim=1)  # (batch, num_domains, style_dim)
-        idx = torch.LongTensor(range(y.size(0)))
+        idx = torch.LongTensor(range(y.size(0)))#, device=y.device)
         s = out[idx, y]  # (batch, style_dim)
         return s
 
@@ -295,7 +294,7 @@ class StyleEncoder(nn.Module):
         for layer in self.unshared:
             out += [layer(h)]
         out = torch.stack(out, dim=1)  # (batch, num_domains, style_dim)
-        idx = torch.LongTensor(range(y.size(0)))
+        idx = torch.LongTensor(range(y.size(0)))#, device=y.device)
         s = out[idx, y]  # (batch, style_dim)
         return s
 
@@ -1122,3 +1121,4 @@ class VectorGenerator(nn.Module):
         # Concatenate the style vector with the input image
         x = torch.cat([x, style], dim=1)
         return self.generator(x)
+
