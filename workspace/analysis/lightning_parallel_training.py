@@ -173,6 +173,27 @@ class LightningModelV2(L.LightningModule):
 
         return loss
 
+    def test_step(self, batch, batch_idx):
+        inputs, target = batch
+        output = self.model(inputs)
+        loss = cross_entropy(output, target)
+
+        # Apply softmax if needed
+        if self.apply_softmax:
+            output = nn.Softmax(dim=1)(output)
+
+        # Update and log metrics
+        self.val_accuracy.update(output, target)
+        self.val_rocauc.update(output, target)
+        self.val_f1.update(output, target)
+        if (self.current_epoch % 5 == 0 and self.current_epoch > 0) or (self.current_epoch == self.max_epoch - 1):
+            self.val_confmat.update(output, target)
+
+        # Log the loss
+        self.log("val_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
+
+        return loss
+
     def on_train_epoch_end(self):
         # Log the metric objects (this computes the final value)
         self.log("train_acc", self.train_accuracy.compute(), on_epoch=True, sync_dist=True)
@@ -950,8 +971,8 @@ class LightningStarGANV2(L.LightningModule):
                 current_step = batch_idx + len(self.trainer.train_dataloader[0]) * self.current_epoch
                 self.log_images_with_colormap(x_real, y_org, x_ref, x_ref2, y_trg, z_trg, z_trg2,
                                               num=min(y_org.size(0), 5), plot_ema=True, step=current_step)
-                self.log_images_with_colormap(x_real, y_org, x_ref, x_ref2, y_trg, z_trg, z_trg2,
-                                              num=min(y_org.size(0), 5), plot_ema=False, step=current_step)
+                # self.log_images_with_colormap(x_real, y_org, x_ref, x_ref2, y_trg, z_trg, z_trg2,
+                #                               num=min(y_org.size(0), 5), plot_ema=False, step=current_step)
 
 
     def log_images_with_colormap(self, x_real, y_org, x_ref, x_ref2, y_trg, z_trg, z_trg2, num=4, plot_ema=True, step=0):
@@ -964,7 +985,7 @@ class LightningStarGANV2(L.LightningModule):
             style_encoder_weight = list(map(lambda x: x.data.cpu(), self.style_encoder.parameters()))
             self.copy_parameters_from_weight(self.style_encoder, self.style_encoder_ema_weight)
 
-        fig, axs = plt.subplots(num * 2, 4, figsize=(10, 20), squeeze=False)
+        fig, axs = plt.subplots(num * 2, 4, figsize=(30, 70), squeeze=False)
         with torch.no_grad():
             x_fake_ref = self.generator(x_real, self.style_encoder(x_ref, y_trg))
             x_fake_ref2 = self.denormalize_img(self.generator(x_real, self.style_encoder(x_ref2, y_trg))).permute(0, 2, 3, 1).cpu().float().numpy()

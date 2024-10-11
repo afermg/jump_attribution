@@ -398,7 +398,8 @@ classifier Training
 #                     num_sanity_val_steps=0, #to use only if you know the trainer is working !
 #                     callbacks=[checkpoint_callback],
 #                     #enable_checkpointing=False,
-#                     enable_progress_bar=False
+#                     enable_progress_bar=False,
+#                     deterministic=True
 #                     )
 
 # import resource
@@ -414,76 +415,172 @@ GANs Training
 '''
 
 
-os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
-os.environ["NCCL_P2P_DISABLE"] = "1"
+# os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+# os.environ["NCCL_P2P_DISABLE"] = "1"
 
-# Some parameter definition
-fold=0
-img_size = 448
-num_domains = 4 #n_class
-max_epoch = 1
-latent_dim = 16
-style_dim = 64
+# # Some parameter definition
+# fold=0
+# img_size = 448
+# num_domains = 4 #n_class
+# max_epoch = 30
+# latent_dim = 16
+# style_dim = 64
 
-# # Lightning Training
-tb_logger = pl_loggers.TensorBoardLogger(save_dir=Path("logs"), name="StarGANv2_image_active")
-checkpoint_callback = ModelCheckpoint(dirpath=Path("lightning_checkpoint_log"),
-                                      filename=f"StarGANv2_image_active_fold_{fold}_"+"{epoch}-{step}", #-{train_acc_true:.2f}-{train_acc_fake:.2f}",
-                                      #save_top_k=1,
-                                      #monitor="val_acc",
-                                      #mode="max",
-                                      every_n_train_steps=50)
-                                      #every_n_epochs=1)
+# # # Lightning Training
+# tb_logger = pl_loggers.TensorBoardLogger(save_dir=Path("logs"), name="StarGANv2_image_active")
+# checkpoint_callback = ModelCheckpoint(dirpath=Path("lightning_checkpoint_log"),
+#                                       filename=f"StarGANv2_image_active_fold_{fold}_"+"{epoch}-{step}", #-{train_acc_true:.2f}-{train_acc_fake:.2f}",
+#                                       #save_top_k=1,
+#                                       #monitor="val_acc",
+#                                       #mode="max",
+#                                       every_n_train_steps=50)
+#                                       #every_n_epochs=1)
 
-torch.set_float32_matmul_precision('medium') #try 'high')
-seed_everything(42, workers=True)
+# torch.set_float32_matmul_precision('medium') #try 'high')
+# seed_everything(42, workers=True)
 
-lit_model = LightningStarGANV2(
-    conv_model.Generator, # generator
-    conv_model.MappingNetwork, # mapping_network
-    conv_model.StyleEncoder, # style_encoder
-    conv_model.Discriminator, # discriminator
-    {"num_channels": len(channel), "dim_in": 64, "style_dim": style_dim, "num_block": 4, "max_conv_dim": 512}, # generator_param
-    {"latent_dim": latent_dim, "style_dim": 64, "num_domains": num_domains}, # mapping_network
-    {"img_size": img_size, "num_channels": len(channel), "num_domains": num_domains, "dim_in": 64, "style_dim": style_dim,
-     "num_block": 4, "max_conv_dim": 512}, # style_encoder_param
-    {"img_size": img_size, "num_channels": len(channel), "num_domains": num_domains, "dim_in": 64, "style_dim": style_dim,
-     "num_block": 4, "max_conv_dim": 512}, # discriminator_param,
-    {"lr": 1e-4, "betas": (0, 0.99)}, # adam_param_g G
-    {"lr": 1e-6, "betas": (0, 0.99)}, # adam_param_m F
-    {"lr": 1e-4, "betas": (0, 0.99)}, # adam_param_s E
-    {"lr": 1e-4, "betas": (0, 0.99)}, # adam_param_d D
-    {"lambda_cyc": 1,  "lambda_sty": 1, "lambda_ds": 1, "lambda_reg": 1}, # weight_loss (eventually tweak lambda_ds (original authors set it to 1 for CelebaHQ and 2 for AFHQ))
-    {"generator": 0.999,"mapping_network": 0.999, "style_encoder": 0.999}, # beta_moving_avg (Looks 0.99 to 0.999 looks to have better behavior)
-    latent_dim)# latent_dim
+# lit_model = LightningStarGANV2(
+#     conv_model.Generator, # generator
+#     conv_model.MappingNetwork, # mapping_network
+#     conv_model.StyleEncoder, # style_encoder
+#     conv_model.Discriminator, # discriminator
+#     {"num_channels": len(channel), "dim_in": 64, "style_dim": style_dim, "num_block": 4, "max_conv_dim": 512}, # generator_param
+#     {"latent_dim": latent_dim, "style_dim": 64, "num_domains": num_domains}, # mapping_network
+#     {"img_size": img_size, "num_channels": len(channel), "num_domains": num_domains, "dim_in": 64, "style_dim": style_dim,
+#      "num_block": 4, "max_conv_dim": 512}, # style_encoder_param
+#     {"img_size": img_size, "num_channels": len(channel), "num_domains": num_domains, "dim_in": 64, "style_dim": style_dim,
+#      "num_block": 4, "max_conv_dim": 512}, # discriminator_param,
+#     {"lr": 1e-4, "betas": (0, 0.99)}, # adam_param_g G
+#     {"lr": 1e-6, "betas": (0, 0.99)}, # adam_param_m F
+#     {"lr": 1e-4, "betas": (0, 0.99)}, # adam_param_s E
+#     {"lr": 1e-4, "betas": (0, 0.99)}, # adam_param_d D
+#     {"lambda_cyc": 1,  "lambda_sty": 1, "lambda_ds": 1, "lambda_reg": 1}, # weight_loss (eventually tweak lambda_ds (original authors set it to 1 for CelebaHQ and 2 for AFHQ))
+#     {"generator": 0.999,"mapping_network": 0.999, "style_encoder": 0.999}, # beta_moving_avg (Looks 0.99 to 0.999 looks to have better behavior)
+#     latent_dim)# latent_dim
 
-batch_size = 8 #len(dataset_fold[fold]["train"])
+# batch_size = 8 #len(dataset_fold[fold]["train"])
 
-# from lightning.pytorch.strategies import DDPStrategy
+# # from lightning.pytorch.strategies import DDPStrategy
 
-trainer = L.Trainer(
-                    accelerator="gpu",
-                    devices=2,
-                    precision="bf16-mixed",
-                    #strategy="ddp_notebook",
-                    strategy="ddp_find_unused_parameters_true",#DDPStrategy(static_graph=True)
-                    max_epochs=max_epoch,
-                    logger=tb_logger,
-                    #num_sanity_val_steps=2, #to use only if you know the trainer is working !
-                    callbacks=[checkpoint_callback],
-                    #enable_checkpointing=False,
-                    enable_progress_bar=True,
-                    log_every_n_steps=1
-                    #profiler="simple"
-                    )
+# trainer = L.Trainer(
+#                     accelerator="gpu",
+#                     devices=2,
+#                     precision="bf16-mixed",
+#                     #strategy="ddp_notebook",
+#                     strategy="ddp_find_unused_parameters_true",#DDPStrategy(static_graph=True)
+#                     max_epochs=max_epoch,
+#                     logger=tb_logger,
+#                     #num_sanity_val_steps=2, #to use only if you know the trainer is working !
+#                     callbacks=[checkpoint_callback],
+#                     #enable_checkpointing=False,
+#                     enable_progress_bar=True,
+#                     log_every_n_steps=1,
+#                     deterministic=True
+#                     #profiler="simple"
+#                     )
 
-import resource
-soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
-resource.setrlimit(resource.RLIMIT_NOFILE, (hard, hard))
+# import resource
+# soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+# resource.setrlimit(resource.RLIMIT_NOFILE, (hard, hard))
 
-trainer.fit(lit_model, train_dataloaders=[DataLoader(dataset_fold[fold]["train"], batch_size=batch_size,
-                                                     num_workers=1, persistent_workers=True,
-                                                     shuffle=True, drop_last=True),
-                                          DataLoader(dataset_fold_ref[fold]["train"], batch_size=batch_size,
-                                                     num_workers=1, persistent_workers=True,
-                                                     shuffle=True, drop_last=True)])
+# trainer.fit(lit_model, train_dataloaders=[DataLoader(dataset_fold[fold]["train"], batch_size=batch_size,
+#                                                      num_workers=1, persistent_workers=True,
+#                                                      shuffle=True, drop_last=True),
+#                                           DataLoader(dataset_fold_ref[fold]["train"], batch_size=batch_size,
+#                                                      num_workers=1, persistent_workers=True,
+#                                                      shuffle=True, drop_last=True)])
+
+"""Load trained StarGANv2 and trained Generator"""
+StarGANv2_path = "StarGANv2_image_active_fold_0_epoch=29-step=70400.ckpt"
+StarGANv2_module = LightningStarGANV2.load_from_checkpoint(Path("lightning_checkpoint_log") / StarGANv2_path,
+                                                            generator=conv_model.Generator,
+                                                            mapping_network=conv_model.MappingNetwork,
+                                                            style_encoder=conv_model.StyleEncoder,
+                                                            discriminator=conv_model.Discriminator)
+
+StarGANv2_module.generator_weight = list(map(lambda x: x.data.cpu(), StarGANv2_module.generator.parameters()))
+StarGANv2_module.mapping_network_weight = list(map(lambda x: x.data.cpu(), StarGANv2_module.mapping_network.parameters()))
+StarGANv2_module.style_encoder_weight = list(map(lambda x: x.data.cpu(), StarGANv2_module.style_encoder.parameters()))
+
+generator = StarGANv2_module.generator
+mapping_network = StarGANv2_module.mapping_network
+style_encoder = StarGANv2_module.style_encoder
+discriminator = StarGANv2_module.discriminator
+
+StarGANv2_module.copy_parameters_from_weight(StarGANv2_module.generator, StarGANv2_module.generator_ema_weight)
+StarGANv2_module.copy_parameters_from_weight(StarGANv2_module.mapping_network, StarGANv2_module.mapping_network_ema_weight)
+StarGANv2_module.copy_parameters_from_weight(StarGANv2_module.style_encoder, StarGANv2_module.style_encoder_ema_weight)
+
+generator_ema = StarGANv2_module.generator
+mapping_network_ema = StarGANv2_module.mapping_network
+style_encoder_ema = StarGANv2_module.style_encoder
+
+
+VGG_path = "VGG_image_active_fold_0epoch=41-train_acc=0.94-val_acc=0.92.ckpt"
+VGG_module = LightningModelV2.load_from_checkpoint(Path("lightning_checkpoint_log") / VGG_path,
+                                                   model=conv_model.VGG_ch).model.eval()
+
+"""Create loaders"""
+batch_size = 32
+fold = 0
+train_dataloaders = [DataLoader(dataset_fold[fold]["train"], batch_size=batch_size,
+                                num_workers=1, persistent_workers=True,
+                                shuffle=True, drop_last=True),
+                     DataLoader(dataset_fold_ref[fold]["train"], batch_size=batch_size,
+                                num_workers=1, persistent_workers=True,
+                                shuffle=True, drop_last=True)]
+
+val_dataloaders = [DataLoader(dataset_fold[fold]["val"], batch_size=batch_size,
+                              num_workers=1, persistent_workers=True,
+                              shuffle=True, drop_last=True),
+                   DataLoader(dataset_fold_ref[fold]["val"], batch_size=batch_size,
+                              num_workers=1, persistent_workers=True,
+                              shuffle=True, drop_last=True)]
+
+test_dataloaders = [DataLoader(dataset_fold[fold]["test"], batch_size=batch_size,
+                              num_workers=1, persistent_workers=True,
+                              shuffle=True, drop_last=True),
+                   DataLoader(dataset_fold_ref[fold]["test"], batch_size=batch_size,
+                              num_workers=1, persistent_workers=True,
+                              shuffle=True, drop_last=True)]
+
+
+"""Plot confusion matrix"""
+
+
+
+
+
+
+# split = "train"
+# num_images = 500
+# device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+# trained_generator = trainer.model.generator.to(device)
+# trained_model_path = [
+#     "SimpleNN_profiles_fold_0_RobustScaler_epoch=461-train_acc=0.83-val_acc=0.55.ckpt",
+#     "SimpleNN_profiles_fold_1_RobustScaler_epoch=377-train_acc=0.87-val_acc=0.45.ckpt",
+#     "SimpleNN_profiles_fold_2_RobustScaler_epoch=145-train_acc=0.72-val_acc=0.50.ckpt",
+#     "SimpleNN_profiles_fold_3_RobustScaler_epoch=341-train_acc=0.88-val_acc=0.41.ckpt",
+#     "SimpleNN_profiles_fold_4_RobustScaler_epoch=209-train_acc=0.79-val_acc=0.51.ckpt"
+#                      ]
+
+# trained_model = {i: LightningModel.load_from_checkpoint(Path("lightning_checkpoint_log") / trained_model_path[i],
+#                                                      model=conv_model.SimpleNN).model.eval() #disable batchnorm and dropout
+#               for i in list(dataset_fold.keys())}
+
+# prototypes = {}
+# for i in range(7):
+#     options = np.where(dataset_fold[fold][split].row_labels == i)[0]
+#     image_index = 0
+#     x, y = dataset_fold[fold][split][options[image_index]]
+#     prototypes[i] = x
+
+# file_directory = Path("/home/hhakem/projects/counterfactuals_projects/workspace/analysis/figures")
+# fig, axs = plt.subplots(1, 7, figsize=(12, 4))
+# for i, ax in enumerate(axs):
+#     ax.imshow(prototypes[i].reshape(1, 50, -1).permute(1, 2, 0))
+#     ax.axis("off")
+#     ax.set_title(f"Prototype {i}")
+# fig.savefig(file_directory / f"{split}_profiles_styles_fold_{fold}.png")
+# plt.close(fig)
+#
