@@ -123,13 +123,17 @@ class LightningModelV2(L.LightningModule):
 
         # Define metrics once
         self.train_accuracy = MulticlassAccuracy(num_classes=self.n_class, average="macro")
-        self.val_accuracy = MulticlassAccuracy(num_classes=self.n_class, average="macro")
         self.train_rocauc = MulticlassAUROC(num_classes=self.n_class, average="macro")
-        self.val_rocauc = MulticlassAUROC(num_classes=self.n_class, average="macro")
         self.train_f1 = MulticlassF1Score(num_classes=self.n_class, average="macro")
-        self.val_f1 = MulticlassF1Score(num_classes=self.n_class, average="macro")
         self.train_confmat = MulticlassConfusionMatrix(num_classes=self.n_class, normalize="true")
+        self.val_accuracy = MulticlassAccuracy(num_classes=self.n_class, average="macro")
+        self.val_rocauc = MulticlassAUROC(num_classes=self.n_class, average="macro")
+        self.val_f1 = MulticlassF1Score(num_classes=self.n_class, average="macro")
         self.val_confmat = MulticlassConfusionMatrix(num_classes=self.n_class, normalize="true")
+        self.test_accuracy = MulticlassAccuracy(num_classes=self.n_class, average="macro")
+        self.test_rocauc = MulticlassAUROC(num_classes=self.n_class, average="macro")
+        self.test_f1 = MulticlassF1Score(num_classes=self.n_class, average="macro")
+        self.test_confmat = MulticlassConfusionMatrix(num_classes=self.n_class, normalize="true")
 
     def training_step(self, batch, batch_idx):
         inputs, target = batch
@@ -176,23 +180,17 @@ class LightningModelV2(L.LightningModule):
     def test_step(self, batch, batch_idx):
         inputs, target = batch
         output = self.model(inputs)
-        loss = cross_entropy(output, target)
 
         # Apply softmax if needed
         if self.apply_softmax:
             output = nn.Softmax(dim=1)(output)
 
         # Update and log metrics
-        self.val_accuracy.update(output, target)
-        self.val_rocauc.update(output, target)
-        self.val_f1.update(output, target)
-        if (self.current_epoch % 5 == 0 and self.current_epoch > 0) or (self.current_epoch == self.max_epoch - 1):
-            self.val_confmat.update(output, target)
+        self.test_accuracy.update(output, target)
+        self.test_rocauc.update(output, target)
+        self.test_f1.update(output, target)
+        self.test_confmat.update(output, target)
 
-        # Log the loss
-        self.log("val_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
-
-        return loss
 
     def on_train_epoch_end(self):
         # Log the metric objects (this computes the final value)
@@ -229,6 +227,25 @@ class LightningModelV2(L.LightningModule):
                 self.logger.experiment.add_figure("val_confmat", fig_, self.current_epoch)
             plt.close(fig_)
             self.val_confmat.reset()
+
+    def on_test_epoch_end(self):
+        # Log the metric objects (this computes the final testue)
+        test_acc = self.test_accuracy.compute()
+        test_roc_auc = self.test_rocauc.compute()
+        test_f1 = self.test_f1.compute()
+
+        # Reset metrics for the next epoch
+        self.test_accuracy.reset()
+        self.test_rocauc.reset()
+        self.test_f1.reset()
+
+        fig_, ax_ = self.test_confmat.plot()
+        fig_.suptitle(f"acc: {test_acc:.3f} - rocauc: {test_roc_auc:.3f} - f1: {test_f1:.3f}")
+        if self.trainer.is_global_zero:
+            self.logger.experiment.add_figure("test_confmat", fig_, self.current_epoch)
+
+        plt.close(fig_)
+        self.test_confmat.reset()
 
     def configure_optimizers(self):
         optimizer = optim.Adam(self.parameters(), lr=self.lr, weight_decay=self.weight_decay)

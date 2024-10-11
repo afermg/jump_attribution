@@ -45,6 +45,7 @@ from lightning_parallel_training import LightningModelV2, LightningGANV2, Lightn
 from lightning.pytorch import Trainer, seed_everything
 from lightning.pytorch import loggers as pl_loggers
 from lightning.pytorch.callbacks import ModelCheckpoint
+from lightning.pytorch.utilities.combined_loader import CombinedLoader
 
 from pathlib import Path
 
@@ -367,7 +368,7 @@ classifier Training
 #                                       save_top_k=1,
 #                                       monitor="val_acc",
 #                                       mode="max",
-#                                       every_n_epochs=2)
+#                                       every_n_epochs=1)
 
 # torch.set_float32_matmul_precision('medium') #try 'high')
 # seed_everything(42, workers=True)
@@ -398,8 +399,9 @@ classifier Training
 #                     num_sanity_val_steps=0, #to use only if you know the trainer is working !
 #                     callbacks=[checkpoint_callback],
 #                     #enable_checkpointing=False,
-#                     enable_progress_bar=False,
-#                     deterministic=True
+#                     enable_progress_bar=False
+#                     #deterministic=True #using along with torchmetric: it slow down process as it apparently rely
+#                     #on some cumsum which is not permitted in deterministic on GPU and then transfer to CPU
 #                     )
 
 # import resource
@@ -516,37 +518,84 @@ mapping_network_ema = StarGANv2_module.mapping_network
 style_encoder_ema = StarGANv2_module.style_encoder
 
 
-VGG_path = "VGG_image_active_fold_0epoch=41-train_acc=0.94-val_acc=0.92.ckpt"
+# This path is for non-normalized images !
+# "VGG_image_active_fold_0epoch=41-train_acc=0.94-val_acc=0.92.ckpt"
+
+VGG_path = "VGG_image_active_fold_0epoch=78-train_acc=0.96-val_acc=0.91.ckpt"
 VGG_module = LightningModelV2.load_from_checkpoint(Path("lightning_checkpoint_log") / VGG_path,
-                                                   model=conv_model.VGG_ch).model.eval()
+                                                   model=conv_model.VGG_ch)
 
 """Create loaders"""
 batch_size = 32
 fold = 0
 train_dataloaders = [DataLoader(dataset_fold[fold]["train"], batch_size=batch_size,
                                 num_workers=1, persistent_workers=True,
-                                shuffle=True, drop_last=True),
+                                shuffle=True),
                      DataLoader(dataset_fold_ref[fold]["train"], batch_size=batch_size,
                                 num_workers=1, persistent_workers=True,
-                                shuffle=True, drop_last=True)]
+                                shuffle=True)]
 
 val_dataloaders = [DataLoader(dataset_fold[fold]["val"], batch_size=batch_size,
                               num_workers=1, persistent_workers=True,
-                              shuffle=True, drop_last=True),
+                              shuffle=True),
                    DataLoader(dataset_fold_ref[fold]["val"], batch_size=batch_size,
                               num_workers=1, persistent_workers=True,
-                              shuffle=True, drop_last=True)]
+                              shuffle=True)]
 
 test_dataloaders = [DataLoader(dataset_fold[fold]["test"], batch_size=batch_size,
-                              num_workers=1, persistent_workers=True,
-                              shuffle=True, drop_last=True),
-                   DataLoader(dataset_fold_ref[fold]["test"], batch_size=batch_size,
-                              num_workers=1, persistent_workers=True,
-                              shuffle=True, drop_last=True)]
+                               num_workers=1, persistent_workers=True,
+                               shuffle=True),
+                    DataLoader(dataset_fold_ref[fold]["test"], batch_size=batch_size,
+                               num_workers=1, persistent_workers=True,
+                               shuffle=True)]
+
+# Validation should be handled on a single devide (not ddp) Lightning Recommendation
+torch.set_float32_matmul_precision('medium') #try 'high')
+seed_everything(42, workers=True)
+tb_logger = pl_loggers.TensorBoardLogger(save_dir=Path("logs"), name="VGG_image_active_test")
+trainer = L.Trainer(accelerator="gpu",
+                    devices=1,
+                    logger=tb_logger,
+                    #precision="bf16-mixed",
+                    num_sanity_val_steps=0, #to use only if you know the trainer is working !
+                    enable_checkpointing=False,
+                    enable_progress_bar=True,
+                    )
+
+import resource
+soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+resource.setrlimit(resource.RLIMIT_NOFILE, (hard, hard))
+
+
+trainer.test(VGG_module, train_dataloaders[0])
+trainer.logger = pl_loggers.TensorBoardLogger(save_dir=Path("logs"), name="VGG_image_active_test")
+trainer.test(VGG_module, val_dataloaders[0])
+trainer.logger = pl_loggers.TensorBoardLogger(save_dir=Path("logs"), name="VGG_image_active_test")
+trainer.test(VGG_module, test_dataloaders[0])
 
 
 """Plot confusion matrix"""
+# from torchmetrics.classification import (
+#     MulticlassAUROC, MulticlassAccuracy, MulticlassF1Score, MulticlassConfusionMatrix, BinaryAccuracy)
+#         inputs, target = batch
+#         output = self.model(inputs)
+#         loss = cross_entropy(output, target)
 
+#         Apply softmax if needed
+#         if self.apply_softmax:
+#             output = nn.Softmax(dim=1)(output)
+
+#         Update and log metrics
+#         self.val_accuracy.update(output, target)
+#         self.val_rocauc.update(output, target)
+#         self.val_f1.update(output, target)
+#         if (self.current_epoch % 5 == 0 and self.current_epoch > 0) or (self.current_epoch == self.max_epoch - 1):
+#             self.val_confmat.update(output, target)
+
+#         Log the loss
+#         self.log("val_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
+
+#         return loss
 
 
 
