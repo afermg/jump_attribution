@@ -492,7 +492,66 @@ GANs Training
 #                                                      num_workers=1, persistent_workers=True,
 #                                                      shuffle=True, drop_last=True)])
 
+
+"""Confusion matrix of real image"""
+# This path is for non-normalized images !
+# "VGG_image_active_fold_0epoch=41-train_acc=0.94-val_acc=0.92.ckpt"
+
+# VGG_path = "VGG_image_active_fold_0epoch=78-train_acc=0.96-val_acc=0.91.ckpt"
+# VGG_module = LightningModelV2.load_from_checkpoint(Path("lightning_checkpoint_log") / VGG_path,
+#                                                    model=conv_model.VGG_ch)
+
+# batch_size = 32
+# fold = 0
+# train_dataloaders = [DataLoader(dataset_fold[fold]["train"], batch_size=batch_size,
+#                                 num_workers=1, persistent_workers=True,
+#                                 shuffle=True),
+#                      DataLoader(dataset_fold_ref[fold]["train"], batch_size=batch_size,
+#                                 num_workers=1, persistent_workers=True,
+#                                 shuffle=True)]
+
+# val_dataloaders = [DataLoader(dataset_fold[fold]["val"], batch_size=batch_size,
+#                               num_workers=1, persistent_workers=True,
+#                               shuffle=True),
+#                    DataLoader(dataset_fold_ref[fold]["val"], batch_size=batch_size,
+#                               num_workers=1, persistent_workers=True,
+#                               shuffle=True)]
+
+# test_dataloaders = [DataLoader(dataset_fold[fold]["test"], batch_size=batch_size,
+#                                num_workers=1, persistent_workers=True,
+#                                shuffle=True),
+#                     DataLoader(dataset_fold_ref[fold]["test"], batch_size=batch_size,
+#                                num_workers=1, persistent_workers=True,
+#                                shuffle=True)]
+
+# # Validation should be handled on a single devide (not ddp) Lightning Recommendation
+# torch.set_float32_matmul_precision('medium') #try 'high')
+# seed_everything(42, workers=True)
+# tb_logger = pl_loggers.TensorBoardLogger(save_dir=Path("logs"), name="VGG_image_active_test")
+# trainer = L.Trainer(accelerator="gpu",
+#                     devices=1,
+#                     logger=tb_logger,
+#                     #precision="bf16-mixed",
+#                     num_sanity_val_steps=0, #to use only if you know the trainer is working !
+#                     enable_checkpointing=False,
+#                     enable_progress_bar=True,
+#                     )
+
+# import resource
+# soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+# resource.setrlimit(resource.RLIMIT_NOFILE, (hard, hard))
+
+
+# trainer.test(VGG_module, train_dataloaders[0])
+# trainer.logger = pl_loggers.TensorBoardLogger(save_dir=Path("logs"), name="VGG_image_active_test")
+# trainer.test(VGG_module, val_dataloaders[0])
+# trainer.logger = pl_loggers.TensorBoardLogger(save_dir=Path("logs"), name="VGG_image_active_test")
+# trainer.test(VGG_module, test_dataloaders[0])
+
+"""Generate fake image for each style transfer"""
+
 """Load trained StarGANv2 and trained Generator"""
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 StarGANv2_path = "StarGANv2_image_active_fold_0_epoch=29-step=70400.ckpt"
 StarGANv2_module = LightningStarGANV2.load_from_checkpoint(Path("lightning_checkpoint_log") / StarGANv2_path,
                                                             generator=conv_model.Generator,
@@ -504,132 +563,100 @@ StarGANv2_module.generator_weight = list(map(lambda x: x.data.cpu(), StarGANv2_m
 StarGANv2_module.mapping_network_weight = list(map(lambda x: x.data.cpu(), StarGANv2_module.mapping_network.parameters()))
 StarGANv2_module.style_encoder_weight = list(map(lambda x: x.data.cpu(), StarGANv2_module.style_encoder.parameters()))
 
-generator = StarGANv2_module.generator
-mapping_network = StarGANv2_module.mapping_network
-style_encoder = StarGANv2_module.style_encoder
-discriminator = StarGANv2_module.discriminator
+# generator = StarGANv2_module.generator
+# mapping_network = StarGANv2_module.mapping_network
+# style_encoder = StarGANv2_module.style_encoder
+# discriminator = StarGANv2_module.discriminator
 
 StarGANv2_module.copy_parameters_from_weight(StarGANv2_module.generator, StarGANv2_module.generator_ema_weight)
 StarGANv2_module.copy_parameters_from_weight(StarGANv2_module.mapping_network, StarGANv2_module.mapping_network_ema_weight)
 StarGANv2_module.copy_parameters_from_weight(StarGANv2_module.style_encoder, StarGANv2_module.style_encoder_ema_weight)
 
-generator_ema = StarGANv2_module.generator
-mapping_network_ema = StarGANv2_module.mapping_network
-style_encoder_ema = StarGANv2_module.style_encoder
+generator = StarGANv2_module.generator.to(device)
+mapping_network = StarGANv2_module.mapping_network.to(device)
+style_encoder = StarGANv2_module.style_encoder.to(device)
+latent_dim = StarGANv2_module.latent_dim
 
+"""CAREFUL THINK TO DENORMALIZE OUTPUT OF THE GENERATOR OR NORMALIZE INPUT IMAGE INTO THE GENERATOR"""
 
-# This path is for non-normalized images !
-# "VGG_image_active_fold_0epoch=41-train_acc=0.94-val_acc=0.92.ckpt"
-
-VGG_path = "VGG_image_active_fold_0epoch=78-train_acc=0.96-val_acc=0.91.ckpt"
-VGG_module = LightningModelV2.load_from_checkpoint(Path("lightning_checkpoint_log") / VGG_path,
-                                                   model=conv_model.VGG_ch)
-
-"""Create loaders"""
-batch_size = 32
 fold = 0
-train_dataloaders = [DataLoader(dataset_fold[fold]["train"], batch_size=batch_size,
+fake_img_path = Path("image_active_dataset/fake_imgs")
+batch_size = 8
+num_outs_per_domain = 10
+split = "train"
+mode = "ref"
+sub_directory = Path(split) / f"fold_{fold}" / mode / "imgs_labels_groups.zarr"
+
+store = zarr.DirectoryStore(Path("image_active_dataset") / sub_directory)
+root = zarr.group(store=store)
+
+dataset = dataset_fold[fold][split]
+
+imgs_path, channel, fold_idx = dataset.imgs_path, dataset.channel, dataset.fold_idx
+domains = np.unique(dataset.imgs_zarr["labels"][fold_idx[:]])
+for cls_trg in domains:
+    mask_trg = dataset.imgs_zarr["labels"][fold_idx[:]] == cls_trg
+    idx_trg = fold_idx[mask_trg]
+    idx_org = fold_idx[~mask_trg]
+    loader_org = DataLoader(custom_dataset.ImageDataset_all_info(imgs_path,
+                                                                 channel=id_channel,
+                                                                 fold_idx=idx_org,
+                                                                 img_transform=v2.Compose([v2.Lambda(lambda img:
+                                                                                                     torch.tensor(img, dtype=torch.float32)),
+                                                                                           v2.Normalize(mean=len(channel)*[0.5],
+                                                                                                        std=len(channel)*[0.5])]),
+                                                                 label_transform=lambda label: torch.tensor(label, dtype=torch.long)),
+                            batch_size=batch_size,
+                            num_workers=1, persistent_workers=True)
+    if mode == "ref":
+        loader_trg = DataLoader(custom_dataset.ImageDataset(imgs_path,
+                                                            channel=id_channel,
+                                                            fold_idx=idx_trg,
+                                                            img_transform=v2.Compose([v2.Lambda(lambda img:
+                                                                                                torch.tensor(img, dtype=torch.float32)),
+                                                                                      v2.Normalize(mean=len(channel)*[0.5],
+                                                                                                   std=len(channel)*[0.5])]),
+                                                            label_transform=lambda label: torch.tensor(label, dtype=torch.long)),
+                                batch_size=batch_size,
                                 num_workers=1, persistent_workers=True,
-                                shuffle=True),
-                     DataLoader(dataset_fold_ref[fold]["train"], batch_size=batch_size,
-                                num_workers=1, persistent_workers=True,
-                                shuffle=True)]
+                                shuffle=True)
+    for batch in loader_org:
+        x_real, y_org, groups_org, indices_org = batch
+        N = y_org.size(0)
+        x_real, y_org = x_real.to(device), y_org.to(device)
+        for _ in range(num_outs_per_domain):
+            with torch.no_grad():
+                if mode == 'latent':
+                    y_trg = torch.tensor([cls_trg] * N).to(device)
+                    z_trg = torch.randn(N, latent_dim).to(device)
+                    s_trg = mapping_network(z_trg, y_trg)
+                else:
+                    try:
+                        x_ref, y_trg = next(iter_ref).to(device)
+                        if y_trg.size(0) < N:
+                            iter_ref = iter(loader_ref)
+                            x_ref, y_trg = next(iter_ref).to(device)
+                    except:
+                        iter_ref = iter(loader_ref)
+                        x_ref, y_trg = next(iter_ref).to(device)
 
-val_dataloaders = [DataLoader(dataset_fold[fold]["val"], batch_size=batch_size,
-                              num_workers=1, persistent_workers=True,
-                              shuffle=True),
-                   DataLoader(dataset_fold_ref[fold]["val"], batch_size=batch_size,
-                              num_workers=1, persistent_workers=True,
-                              shuffle=True)]
+                    if x_ref.size(0) > N:
+                        x_ref = x_ref[:N]
+                        y_trg = y_trg[:N]
+                    s_trg = style_encoder(x_ref, y_trg)
+                x_fake = generator(x_src, s_trg).unsqueeze(1).cpu()
+            try:
+                x_fake_stack = x_fake_stack.stack(x_fake, dim=1)
+            else:
+                x_fake_stack = x_fake
+        x_fake_stack = x_fake_stack.numpy()
+        y_trg = y_trg.cpu().numpy()
+        y_org = y_org.cpu().numpy()
 
-test_dataloaders = [DataLoader(dataset_fold[fold]["test"], batch_size=batch_size,
-                               num_workers=1, persistent_workers=True,
-                               shuffle=True),
-                    DataLoader(dataset_fold_ref[fold]["test"], batch_size=batch_size,
-                               num_workers=1, persistent_workers=True,
-                               shuffle=True)]
-
-# Validation should be handled on a single devide (not ddp) Lightning Recommendation
-torch.set_float32_matmul_precision('medium') #try 'high')
-seed_everything(42, workers=True)
-tb_logger = pl_loggers.TensorBoardLogger(save_dir=Path("logs"), name="VGG_image_active_test")
-trainer = L.Trainer(accelerator="gpu",
-                    devices=1,
-                    logger=tb_logger,
-                    #precision="bf16-mixed",
-                    num_sanity_val_steps=0, #to use only if you know the trainer is working !
-                    enable_checkpointing=False,
-                    enable_progress_bar=True,
-                    )
-
-import resource
-soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
-resource.setrlimit(resource.RLIMIT_NOFILE, (hard, hard))
-
-
-trainer.test(VGG_module, train_dataloaders[0])
-trainer.logger = pl_loggers.TensorBoardLogger(save_dir=Path("logs"), name="VGG_image_active_test")
-trainer.test(VGG_module, val_dataloaders[0])
-trainer.logger = pl_loggers.TensorBoardLogger(save_dir=Path("logs"), name="VGG_image_active_test")
-trainer.test(VGG_module, test_dataloaders[0])
+        root.create_dataset('imgs', data=x_fake_stack, overwrite=False, chunks=(1, 1, 1, *x_fake_stack.shape[3:]))
+        root.create_dataset('labels', data=y_trg, overwrite=False, chunks=1)
+        root.create_dataset('labels_org', data=y_org, overwrite=False, chunks=1)
+        root.create_dataset('groups_org', data=groups_org, overwrite=False, dtype=object, object_codec=numcodecs.JSON(), overwrite=False, chunks=1)
+        root.create_dataset('idx_org', data=idx_org, overwrite=False, chunks=1)
 
 
-"""Plot confusion matrix"""
-# from torchmetrics.classification import (
-#     MulticlassAUROC, MulticlassAccuracy, MulticlassF1Score, MulticlassConfusionMatrix, BinaryAccuracy)
-#         inputs, target = batch
-#         output = self.model(inputs)
-#         loss = cross_entropy(output, target)
-
-#         Apply softmax if needed
-#         if self.apply_softmax:
-#             output = nn.Softmax(dim=1)(output)
-
-#         Update and log metrics
-#         self.val_accuracy.update(output, target)
-#         self.val_rocauc.update(output, target)
-#         self.val_f1.update(output, target)
-#         if (self.current_epoch % 5 == 0 and self.current_epoch > 0) or (self.current_epoch == self.max_epoch - 1):
-#             self.val_confmat.update(output, target)
-
-#         Log the loss
-#         self.log("val_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
-
-#         return loss
-
-
-
-
-
-# split = "train"
-# num_images = 500
-# device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-# trained_generator = trainer.model.generator.to(device)
-# trained_model_path = [
-#     "SimpleNN_profiles_fold_0_RobustScaler_epoch=461-train_acc=0.83-val_acc=0.55.ckpt",
-#     "SimpleNN_profiles_fold_1_RobustScaler_epoch=377-train_acc=0.87-val_acc=0.45.ckpt",
-#     "SimpleNN_profiles_fold_2_RobustScaler_epoch=145-train_acc=0.72-val_acc=0.50.ckpt",
-#     "SimpleNN_profiles_fold_3_RobustScaler_epoch=341-train_acc=0.88-val_acc=0.41.ckpt",
-#     "SimpleNN_profiles_fold_4_RobustScaler_epoch=209-train_acc=0.79-val_acc=0.51.ckpt"
-#                      ]
-
-# trained_model = {i: LightningModel.load_from_checkpoint(Path("lightning_checkpoint_log") / trained_model_path[i],
-#                                                      model=conv_model.SimpleNN).model.eval() #disable batchnorm and dropout
-#               for i in list(dataset_fold.keys())}
-
-# prototypes = {}
-# for i in range(7):
-#     options = np.where(dataset_fold[fold][split].row_labels == i)[0]
-#     image_index = 0
-#     x, y = dataset_fold[fold][split][options[image_index]]
-#     prototypes[i] = x
-
-# file_directory = Path("/home/hhakem/projects/counterfactuals_projects/workspace/analysis/figures")
-# fig, axs = plt.subplots(1, 7, figsize=(12, 4))
-# for i, ax in enumerate(axs):
-#     ax.imshow(prototypes[i].reshape(1, 50, -1).permute(1, 2, 0))
-#     ax.axis("off")
-#     ax.set_title(f"Prototype {i}")
-# fig.savefig(file_directory / f"{split}_profiles_styles_fold_{fold}.png")
-# plt.close(fig)
-#
