@@ -8,6 +8,7 @@ class ImageDataset(Dataset):
     def __init__(self, imgs_path, channel, fold_idx, img_transform=None, label_transform=None):
         super().__init__()
         self.imgs_zarr = zarr.open(imgs_path)
+        self.imgs_path = imgs_path
         self.channel = channel
         self.fold_idx = fold_idx
         self.img_transform = img_transform
@@ -25,10 +26,35 @@ class ImageDataset(Dataset):
             labels = self.label_transform(labels)
         return imgs, labels
 
+class ImageDataset_all_info(Dataset):
+    def __init__(self, imgs_path, channel, fold_idx, img_transform=None, label_transform=None):
+        super().__init__()
+        self.imgs_zarr = zarr.open(imgs_path)
+        self.imgs_path = imgs_path
+        self.channel = channel
+        self.fold_idx = fold_idx
+        self.img_transform = img_transform
+        self.label_transform = label_transform
+
+    def __len__(self):
+        return len(self.fold_idx)
+
+    def __getitem__(self, idx):
+        imgs = self.imgs_zarr["imgs"].oindex[self.fold_idx[idx], self.channel]
+        labels = self.imgs_zarr["labels"].oindex[self.fold_idx[idx]]
+        groups = self.imgs_zarr["groups"].oindex[self.fold_idx[idx]]
+        indices = self.fold_idx[idx]
+        if self.img_transform is not None:
+            imgs = self.img_transform(imgs)
+        if self.label_transform is not None:
+            labels = self.label_transform(labels)
+        return imgs, labels, groups, indices
+
 class ImageDataset_Ref(Dataset):
     def __init__(self, imgs_path, channel, fold_idx, img_transform=None, label_transform=None, seed=42):
         super().__init__()
         self.imgs_zarr = zarr.open(imgs_path)
+        self.imgs_path = imgs_path
         self.channel = channel
         self.fold_idx = fold_idx
         self.imgs_idx, self.imgs2_idx = self._make_dataset(seed)
