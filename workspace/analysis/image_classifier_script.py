@@ -3,6 +3,7 @@
 import os
 import polars as pl
 import pandas as pd
+from tqdm import tqdm
 
 import zarr
 import numcodecs
@@ -551,112 +552,118 @@ GANs Training
 """Generate fake image for each style transfer"""
 
 """Load trained StarGANv2 and trained Generator"""
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-StarGANv2_path = "StarGANv2_image_active_fold_0_epoch=29-step=70400.ckpt"
-StarGANv2_module = LightningStarGANV2.load_from_checkpoint(Path("lightning_checkpoint_log") / StarGANv2_path,
-                                                            generator=conv_model.Generator,
-                                                            mapping_network=conv_model.MappingNetwork,
-                                                            style_encoder=conv_model.StyleEncoder,
-                                                            discriminator=conv_model.Discriminator)
-
-StarGANv2_module.generator_weight = list(map(lambda x: x.data.cpu(), StarGANv2_module.generator.parameters()))
-StarGANv2_module.mapping_network_weight = list(map(lambda x: x.data.cpu(), StarGANv2_module.mapping_network.parameters()))
-StarGANv2_module.style_encoder_weight = list(map(lambda x: x.data.cpu(), StarGANv2_module.style_encoder.parameters()))
-
-# generator = StarGANv2_module.generator
-# mapping_network = StarGANv2_module.mapping_network
-# style_encoder = StarGANv2_module.style_encoder
-# discriminator = StarGANv2_module.discriminator
-
-StarGANv2_module.copy_parameters_from_weight(StarGANv2_module.generator, StarGANv2_module.generator_ema_weight)
-StarGANv2_module.copy_parameters_from_weight(StarGANv2_module.mapping_network, StarGANv2_module.mapping_network_ema_weight)
-StarGANv2_module.copy_parameters_from_weight(StarGANv2_module.style_encoder, StarGANv2_module.style_encoder_ema_weight)
-
-generator = StarGANv2_module.generator.to(device)
-mapping_network = StarGANv2_module.mapping_network.to(device)
-style_encoder = StarGANv2_module.style_encoder.to(device)
-latent_dim = StarGANv2_module.latent_dim
-
 """CAREFUL THINK TO DENORMALIZE OUTPUT OF THE GENERATOR OR NORMALIZE INPUT IMAGE INTO THE GENERATOR"""
 
-fold = 0
-fake_img_path = Path("image_active_dataset/fake_imgs")
-batch_size = 8
-num_outs_per_domain = 10
-split = "train"
-mode = "ref"
-sub_directory = Path(split) / f"fold_{fold}" / mode / "imgs_labels_groups.zarr"
 
-store = zarr.DirectoryStore(Path("image_active_dataset") / sub_directory)
-root = zarr.group(store=store)
+def generate_dataset(starganv2_path, fake_img_path_preffix, dataset_fold, mode="ref", fold=0, split="train",
+                     batch_size=32, num_outs_per_domain=10, use_ema=True, overwrite=True):
+    # Load checkpoint
+    StarGANv2_module = LightningStarGANV2.load_from_checkpoint(Path("lightning_checkpoint_log") / starganv2_path,
+                                                                generator=conv_model.Generator,
+                                                                mapping_network=conv_model.MappingNetwork,
+                                                                style_encoder=conv_model.StyleEncoder,
+                                                                discriminator=conv_model.Discriminator)
 
-dataset = dataset_fold[fold][split]
+    if use_ema:
+        StarGANv2_module.copy_parameters_from_weight(StarGANv2_module.generator, StarGANv2_module.generator_ema_weight)
+        StarGANv2_module.copy_parameters_from_weight(StarGANv2_module.mapping_network, StarGANv2_module.mapping_network_ema_weight)
+        StarGANv2_module.copy_parameters_from_weight(StarGANv2_module.style_encoder, StarGANv2_module.style_encoder_ema_weight)
 
-imgs_path, channel, fold_idx = dataset.imgs_path, dataset.channel, dataset.fold_idx
-domains = np.unique(dataset.imgs_zarr["labels"][fold_idx[:]])
-for cls_trg in domains:
-    mask_trg = dataset.imgs_zarr["labels"][fold_idx[:]] == cls_trg
-    idx_trg = fold_idx[mask_trg]
-    idx_org = fold_idx[~mask_trg]
-    loader_org = DataLoader(custom_dataset.ImageDataset_all_info(imgs_path,
-                                                                 channel=id_channel,
-                                                                 fold_idx=idx_org,
-                                                                 img_transform=v2.Compose([v2.Lambda(lambda img:
-                                                                                                     torch.tensor(img, dtype=torch.float32)),
-                                                                                           v2.Normalize(mean=len(channel)*[0.5],
-                                                                                                        std=len(channel)*[0.5])]),
-                                                                 label_transform=lambda label: torch.tensor(label, dtype=torch.long)),
-                            batch_size=batch_size,
-                            num_workers=1, persistent_workers=True)
-    if mode == "ref":
-        loader_trg = DataLoader(custom_dataset.ImageDataset(imgs_path,
-                                                            channel=id_channel,
-                                                            fold_idx=idx_trg,
-                                                            img_transform=v2.Compose([v2.Lambda(lambda img:
-                                                                                                torch.tensor(img, dtype=torch.float32)),
-                                                                                      v2.Normalize(mean=len(channel)*[0.5],
-                                                                                                   std=len(channel)*[0.5])]),
-                                                            label_transform=lambda label: torch.tensor(label, dtype=torch.long)),
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    generator = StarGANv2_module.generator.to(device)
+    mapping_network = StarGANv2_module.mapping_network.to(device)
+    style_encoder = StarGANv2_module.style_encoder.to(device)
+    latent_dim = StarGANv2_module.latent_dim
+
+
+    suffix = "_ema" if use_ema else ""
+    fake_img_path = Path(fake_img_path_preffix + suffix)
+    sub_directory = Path(split) / f"fold_{fold}" / mode / "imgs_labels_groups.zarr"
+
+    store = zarr.DirectoryStore(fake_img_path / sub_directory)
+    root = zarr.open_group(store=store, mode="a")
+
+    dataset = dataset_fold[fold][split]
+
+    imgs_path, channel, fold_idx = dataset.imgs_path, dataset.channel, dataset.fold_idx
+    domains = np.unique(dataset.imgs_zarr["labels"][fold_idx[:]])
+    for cls_trg in tqdm(domains, position=0, desc="y_trg") :
+        mask_trg = dataset.imgs_zarr["labels"][fold_idx[:]] == cls_trg
+        idx_trg = fold_idx[mask_trg]
+        idx_org = fold_idx[~mask_trg]
+        loader_org = DataLoader(custom_dataset.ImageDataset_all_info(imgs_path,
+                                                                     channel=id_channel,
+                                                                     fold_idx=idx_org,
+                                                                     img_transform=v2.Compose([v2.Lambda(lambda img:
+                                                                                                         torch.tensor(img, dtype=torch.float32)),
+                                                                                               v2.Normalize(mean=len(channel)*[0.5],
+                                                                                                            std=len(channel)*[0.5])]),
+                                                                     label_transform=lambda label: torch.tensor(label, dtype=torch.long)),
                                 batch_size=batch_size,
-                                num_workers=1, persistent_workers=True,
-                                shuffle=True)
-    for batch in loader_org:
-        x_real, y_org, groups_org, indices_org = batch
-        N = y_org.size(0)
-        x_real, y_org = x_real.to(device), y_org.to(device)
-        for _ in range(num_outs_per_domain):
-            with torch.no_grad():
-                if mode == 'latent':
-                    y_trg = torch.tensor([cls_trg] * N).to(device)
-                    z_trg = torch.randn(N, latent_dim).to(device)
-                    s_trg = mapping_network(z_trg, y_trg)
-                else:
-                    try:
-                        x_ref, y_trg = next(iter_ref).to(device)
-                        if y_trg.size(0) < N:
+                                num_workers=1, persistent_workers=True)
+        if mode == "ref":
+            loader_ref = DataLoader(custom_dataset.ImageDataset(imgs_path,
+                                                                channel=id_channel,
+                                                                fold_idx=idx_trg,
+                                                                img_transform=v2.Compose([v2.Lambda(lambda img:
+                                                                                                    torch.tensor(img, dtype=torch.float32)),
+                                                                                          v2.Normalize(mean=len(channel)*[0.5],
+                                                                                                       std=len(channel)*[0.5])]),
+                                                                label_transform=lambda label: torch.tensor(label, dtype=torch.long)),
+                                    batch_size=batch_size,
+                                    num_workers=1, persistent_workers=True,
+                                    shuffle=True)
+        for batch in tqdm(loader_org, position=1, desc="x_real", leave=True):
+            x_real, y_org, groups_org, indices_org = batch
+            N = y_org.size(0)
+            x_real, y_org = x_real.to(device), y_org.to(device)
+            for _ in range(num_outs_per_domain):
+                with torch.no_grad():
+                    if mode == 'latent':
+                        y_trg = torch.tensor([cls_trg] * N).to(device)
+                        z_trg = torch.randn(N, latent_dim).to(device)
+                        s_trg = mapping_network(z_trg, y_trg)
+                    else:
+                        try:
+                            x_ref, y_trg = next(iter_ref)
+                            x_ref, y_trg = x_ref.to(device), y_trg.to(device)
+                            if y_trg.size(0) < N:
+                                iter_ref = iter(loader_ref)
+                                x_ref, y_trg = next(iter_ref)
+                                x_ref, y_trg = x_ref.to(device), y_trg.to(device)
+                        except:
                             iter_ref = iter(loader_ref)
-                            x_ref, y_trg = next(iter_ref).to(device)
-                    except:
-                        iter_ref = iter(loader_ref)
-                        x_ref, y_trg = next(iter_ref).to(device)
+                            x_ref, y_trg = next(iter_ref)
+                            x_ref, y_trg = x_ref.to(device), y_trg.to(device)
 
-                    if x_ref.size(0) > N:
-                        x_ref = x_ref[:N]
-                        y_trg = y_trg[:N]
-                    s_trg = style_encoder(x_ref, y_trg)
-                x_fake = generator(x_src, s_trg).unsqueeze(1).cpu()
-            try:
-                x_fake_stack = x_fake_stack.stack(x_fake, dim=1)
-            else:
-                x_fake_stack = x_fake
-        x_fake_stack = x_fake_stack.numpy()
-        y_trg = y_trg.cpu().numpy()
-        y_org = y_org.cpu().numpy()
-
-        root.create_dataset('imgs', data=x_fake_stack, overwrite=False, chunks=(1, 1, 1, *x_fake_stack.shape[3:]))
-        root.create_dataset('labels', data=y_trg, overwrite=False, chunks=1)
-        root.create_dataset('labels_org', data=y_org, overwrite=False, chunks=1)
-        root.create_dataset('groups_org', data=groups_org, overwrite=False, dtype=object, object_codec=numcodecs.JSON(), overwrite=False, chunks=1)
-        root.create_dataset('idx_org', data=idx_org, overwrite=False, chunks=1)
+                        if x_ref.size(0) > N:
+                            x_ref = x_ref[:N]
+                            y_trg = y_trg[:N]
+                        s_trg = style_encoder(x_ref, y_trg)
+                    x_fake = (generator(x_real, s_trg) + 1) / 2 #Output of the generator are normalized. So we denormalize.
+                    x_fake.clamp_(0, 1).unsqueeze_(1)
+                    x_fake = x_fake.cpu()
+                try:
+                    x_fake_stack = x_fake_stack.stack(x_fake, dim=1)
+                except:
+                    x_fake_stack = x_fake
+            x_fake_stack = x_fake_stack.numpy()
+            y_trg = y_trg.cpu().numpy()
+            y_org = y_org.cpu().numpy()
 
 
+            root.create_dataset('imgs', data=x_fake_stack, overwrite=False, chunks=(1, 1, 1, *x_fake_stack.shape[3:]))
+            root.create_dataset('labels', data=y_trg, overwrite=False, chunks=1)
+            root.create_dataset('labels_org', data=y_org, overwrite=False, chunks=1)
+            root.create_dataset('groups_org', data=groups_org, overwrite=False, dtype=object, object_codec=numcodecs.JSON(), chunks=1)
+            root.create_dataset('idx_org', data=idx_org, overwrite=False, chunks=1)
+
+starganv2_path = "StarGANv2_image_active_fold_0_epoch=29-step=70400.ckpt"
+mode = "ref"
+fold = 0
+split = "train"
+batch_size = 32
+num_outs_per_domain = 10
+fake_img_path_preffix = "image_active_dataset/fake_imgs"
+generate_dataset(starganv2_path, fake_img_path_preffix, dataset_fold, mode="ref", fold=0, split="train",
+                 batch_size=32, num_outs_per_domain=10, use_ema=True, overwrite=True)
