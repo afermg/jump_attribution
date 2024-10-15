@@ -57,7 +57,7 @@ import xarray as xr
 
 # In[2]:
 
-file_directory = Path("/home/hhakem/projects/counterfactuals_projects/workspace/analysis/figures")
+fig_directory = Path("/home/hhakem/projects/counterfactuals_projects/workspace/analysis/figures")
 metadata_pre = pl.read_csv("target2_eq_moa2_active_metadata")
 
 
@@ -352,7 +352,7 @@ dataset_fold_ref = create_dataset_fold(custom_dataset.ImageDataset_Ref, imgs_pat
 # axes.imshow(dataset_fold[0]["train"][1][0][0])
 # rect = patches.Rectangle((130, 280), recept_field, recept_field, linewidth=7, edgecolor='r', facecolor='none')
 # axes.add_patch(rect)
-# fig.savefig(file_directory / "kernel_vgg_vs_small_image_size")
+# fig.savefig(fig_directory / "kernel_vgg_vs_small_image_size")
 # plt.close()
 
 
@@ -495,60 +495,6 @@ GANs Training
 #                                                      shuffle=True, drop_last=True)])
 
 
-"""Confusion matrix of real image"""
-# This path is for non-normalized images !
-# "VGG_image_active_fold_0epoch=41-train_acc=0.94-val_acc=0.92.ckpt"
-
-# VGG_path = "VGG_image_active_fold_0epoch=78-train_acc=0.96-val_acc=0.91.ckpt"
-# VGG_module = LightningModelV2.load_from_checkpoint(Path("lightning_checkpoint_log") / VGG_path,
-#                                                    model=conv_model.VGG_ch)
-
-# batch_size = 32
-# fold = 0
-# train_dataloaders = [DataLoader(dataset_fold[fold]["train"], batch_size=batch_size,
-#                                 num_workers=1, persistent_workers=True,
-#                                 shuffle=True),
-#                      DataLoader(dataset_fold_ref[fold]["train"], batch_size=batch_size,
-#                                 num_workers=1, persistent_workers=True,
-#                                 shuffle=True)]
-
-# val_dataloaders = [DataLoader(dataset_fold[fold]["val"], batch_size=batch_size,
-#                               num_workers=1, persistent_workers=True,
-#                               shuffle=True),
-#                    DataLoader(dataset_fold_ref[fold]["val"], batch_size=batch_size,
-#                               num_workers=1, persistent_workers=True,
-#                               shuffle=True)]
-
-# test_dataloaders = [DataLoader(dataset_fold[fold]["test"], batch_size=batch_size,
-#                                num_workers=1, persistent_workers=True,
-#                                shuffle=True),
-#                     DataLoader(dataset_fold_ref[fold]["test"], batch_size=batch_size,
-#                                num_workers=1, persistent_workers=True,
-#                                shuffle=True)]
-
-# # Validation should be handled on a single devide (not ddp) Lightning Recommendation
-# torch.set_float32_matmul_precision('medium') #try 'high')
-# seed_everything(42, workers=True)
-# tb_logger = pl_loggers.TensorBoardLogger(save_dir=Path("logs"), name="VGG_image_active_test")
-# trainer = L.Trainer(accelerator="gpu",
-#                     devices=1,
-#                     logger=tb_logger,
-#                     #precision="bf16-mixed",
-#                     num_sanity_val_steps=0, #to use only if you know the trainer is working !
-#                     enable_checkpointing=False,
-#                     enable_progress_bar=True,
-#                     )
-
-# import resource
-# soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
-# resource.setrlimit(resource.RLIMIT_NOFILE, (hard, hard))
-
-
-# trainer.test(VGG_module, train_dataloaders[0])
-# trainer.logger = pl_loggers.TensorBoardLogger(save_dir=Path("logs"), name="VGG_image_active_test")
-# trainer.test(VGG_module, val_dataloaders[0])
-# trainer.logger = pl_loggers.TensorBoardLogger(save_dir=Path("logs"), name="VGG_image_active_test")
-# trainer.test(VGG_module, test_dataloaders[0])
 
 """Generate fake image for each style transfer"""
 
@@ -674,19 +620,116 @@ def generate_dataset(starganv2_path, fake_img_path_preffix, dataset_fold, mode="
                                 store=store, append_dim="batch")
 
 
+def plot_fake_img(fake_img_path_preffix, real_img_path,  dataset_fold, mode="ref", fold=0, split="train", use_ema=True,
+                  num_img_per_domain=2, seed=42):
+
+    suffix = "_ema" if use_ema else ""
+    fake_img_path = Path(fake_img_path_preffix + suffix)
+    sub_directory = Path(split) / f"fold_{fold}" / mode / "imgs_labels_groups.zarr"
+    imgs_zarr_fake = zarr.open(fake_img_path / sub_directory)
+    fold_idx = dataset_fold[fold][split].fold_idx
+    imgs_zarr =  zarr.open(Path(real_img_path))
+
+    real_labels = imgs_zarr["labels"].oindex[fold_idx]
+    domains = np.unique(real_labels)
+    rng = np.random.default_rng(seed)
+    fig, axs = plt.subplots(len(domains) * num_img_per_domain * (len(domains)-1), 11, figsize=(40, 70), squeeze=False)
+    N = num_img_per_domain * (len(domains)-1)
+    n = (len(domains)-1)
+    for i, label in enumerate(domains):
+        label_idx = fold_idx[real_labels == label]
+        label_idx = rng.choice(label_idx, size=num_img_per_domain, replace=False)
+        for j, idx in enumerate(label_idx):
+            fake_idx = np.arange(len(imgs_zarr_fake["idx_org"]))[imgs_zarr_fake["idx_org"].oindex[:] == idx]
+            for k, fk_idx in enumerate(fake_idx):
+                fake_imgs = imgs_zarr_fake["imgs"].oindex[fk_idx]
+                fake_label = imgs_zarr_fake["labels"].oindex[fk_idx]
+                real_img = imgs_zarr["imgs"].oindex[idx, id_channel]
+                axs[N * i + n * j + k][0].imshow(real_img.transpose(1, 2, 0))
+                if k == 0:
+                    axs[N * i + n * j + k][0].set_title(f"Real image - idx: {idx} - Class_{label}")
+                for l in range(fake_imgs.shape[0]):
+                    axs[N * i + n * j + k][l+1].imshow(fake_imgs[l].transpose(1, 2, 0))
+                    if l == 0:
+                        axs[N * i + n * j + k][l+1].set_title(f"Fake image - idx: {idx} - Class_{fake_label}")
+
+    for ax in axs.flatten():
+        ax.axis("off")
+
+    fig.suptitle(f"Real vs Fake img - fold: {fold} - split: {split} - mode: {mode}", y=0.9)
+    fig_name = f"real_fake_img_fold_{fold}_split_{split}_mode_{mode}" + suffix
+    fig.savefig(fig_directory / fig_name)
 
 
-
-# starganv2_path = Path("lightning_checkpoint_log") / "StarGANv2_image_active_fold_0_epoch=29-step=70400.ckpt"
-# mode = "ref"
-# fold = 0
-# split = "train"
-# batch_size = 64
-# num_outs_per_domain = 10
-# fake_img_path_preffix = "image_active_dataset/fake_imgs"
+starganv2_path = Path("lightning_checkpoint_log") / "StarGANv2_image_active_fold_0_epoch=29-step=70400.ckpt"
+mode = "ref"
+fold = 0
+split = "train"
+batch_size = 64
+num_outs_per_domain = 10
+fake_img_path_preffix = "image_active_dataset/fake_imgs"
 # x_fake_stack = generate_dataset(starganv2_path, fake_img_path_preffix, dataset_fold, mode=mode, fold=fold, split=split,
-#                  batch_size=batch_size, num_outs_per_domain=num_outs_per_domain, use_ema=True)
+#                                 batch_size=batch_size, num_outs_per_domain=num_outs_per_domain, use_ema=True)
 
-imgs_zarr_fake = zarr.open(Path("image_active_dataset/fake_imgs_ema/train/fold_0/ref/imgs_labels_groups.zarr"))
-imgs_zarr = zarr.open(Path("image_active_dataset/imgs_labels_groups.zarr"))
-imgs_zarr["labels"].oindex[:]
+
+num_img_per_domain = 2
+seed = 42
+real_img_path = "image_active_dataset/imgs_labels_groups.zarr"
+plot_fake_img(fake_img_path_preffix, real_img_path,  dataset_fold, mode="ref", fold=0,
+              split="train", use_ema=True, num_img_per_domain=2, seed=42)
+
+
+"""Confusion matrix of real image"""
+# This path is for non-normalized images !
+# "VGG_image_active_fold_0epoch=41-train_acc=0.94-val_acc=0.92.ckpt"
+
+# VGG_path = "VGG_image_active_fold_0epoch=78-train_acc=0.96-val_acc=0.91.ckpt"
+# VGG_module = LightningModelV2.load_from_checkpoint(Path("lightning_checkpoint_log") / VGG_path,
+#                                                    model=conv_model.VGG_ch)
+
+# batch_size = 32
+# fold = 0
+# train_dataloaders = [DataLoader(dataset_fold[fold]["train"], batch_size=batch_size,
+#                                 num_workers=1, persistent_workers=True,
+#                                 shuffle=True),
+#                      DataLoader(dataset_fold_ref[fold]["train"], batch_size=batch_size,
+#                                 num_workers=1, persistent_workers=True,
+#                                 shuffle=True)]
+
+# val_dataloaders = [DataLoader(dataset_fold[fold]["val"], batch_size=batch_size,
+#                               num_workers=1, persistent_workers=True,
+#                               shuffle=True),
+#                    DataLoader(dataset_fold_ref[fold]["val"], batch_size=batch_size,
+#                               num_workers=1, persistent_workers=True,
+#                               shuffle=True)]
+
+# test_dataloaders = [DataLoader(dataset_fold[fold]["test"], batch_size=batch_size,
+#                                num_workers=1, persistent_workers=True,
+#                                shuffle=True),
+#                     DataLoader(dataset_fold_ref[fold]["test"], batch_size=batch_size,
+#                                num_workers=1, persistent_workers=True,
+#                                shuffle=True)]
+
+# # Validation should be handled on a single devide (not ddp) Lightning Recommendation
+# torch.set_float32_matmul_precision('medium') #try 'high')
+# seed_everything(42, workers=True)
+# tb_logger = pl_loggers.TensorBoardLogger(save_dir=Path("logs"), name="VGG_image_active_test")
+# trainer = L.Trainer(accelerator="gpu",
+#                     devices=1,
+#                     logger=tb_logger,
+#                     #precision="bf16-mixed",
+#                     num_sanity_val_steps=0, #to use only if you know the trainer is working !
+#                     enable_checkpointing=False,
+#                     enable_progress_bar=True,
+#                     )
+
+# import resource
+# soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+# resource.setrlimit(resource.RLIMIT_NOFILE, (hard, hard))
+
+
+# trainer.test(VGG_module, train_dataloaders[0])
+# trainer.logger = pl_loggers.TensorBoardLogger(save_dir=Path("logs"), name="VGG_image_active_test")
+# trainer.test(VGG_module, val_dataloaders[0])
+# trainer.logger = pl_loggers.TensorBoardLogger(save_dir=Path("logs"), name="VGG_image_active_test")
+# trainer.test(VGG_module, test_dataloaders[0])
