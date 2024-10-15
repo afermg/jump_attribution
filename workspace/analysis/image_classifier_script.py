@@ -49,6 +49,7 @@ from lightning.pytorch.callbacks import ModelCheckpoint
 from lightning.pytorch.utilities.combined_loader import CombinedLoader
 
 from pathlib import Path
+import xarray as xr
 
 # # 1) Loading images and create a pytorch dataset
 
@@ -554,15 +555,14 @@ GANs Training
 """Load trained StarGANv2 and trained Generator"""
 """CAREFUL THINK TO DENORMALIZE OUTPUT OF THE GENERATOR OR NORMALIZE INPUT IMAGE INTO THE GENERATOR"""
 
-
 def generate_dataset(starganv2_path, fake_img_path_preffix, dataset_fold, mode="ref", fold=0, split="train",
-                     batch_size=32, num_outs_per_domain=10, use_ema=True, overwrite=True):
+                     batch_size=32, num_outs_per_domain=10, use_ema=True):
     # Load checkpoint
-    StarGANv2_module = LightningStarGANV2.load_from_checkpoint(Path("lightning_checkpoint_log") / starganv2_path,
-                                                                generator=conv_model.Generator,
-                                                                mapping_network=conv_model.MappingNetwork,
-                                                                style_encoder=conv_model.StyleEncoder,
-                                                                discriminator=conv_model.Discriminator)
+    StarGANv2_module = LightningStarGANV2.load_from_checkpoint(starganv2_path,
+                                                               generator=conv_model.Generator,
+                                                               mapping_network=conv_model.MappingNetwork,
+                                                               style_encoder=conv_model.StyleEncoder,
+                                                               discriminator=conv_model.Discriminator)
 
     if use_ema:
         StarGANv2_module.copy_parameters_from_weight(StarGANv2_module.generator, StarGANv2_module.generator_ema_weight)
@@ -582,12 +582,13 @@ def generate_dataset(starganv2_path, fake_img_path_preffix, dataset_fold, mode="
 
     store = zarr.DirectoryStore(fake_img_path / sub_directory)
     root = zarr.open_group(store=store, mode="a")
+    is_dataset_existing = False
 
     dataset = dataset_fold[fold][split]
 
     imgs_path, channel, fold_idx = dataset.imgs_path, dataset.channel, dataset.fold_idx
     domains = np.unique(dataset.imgs_zarr["labels"][fold_idx[:]])
-    for cls_trg in tqdm(domains, position=0, desc="y_trg") :
+    for i, cls_trg in enumerate(tqdm(domains, position=0, desc="y_trg")) :
         mask_trg = dataset.imgs_zarr["labels"][fold_idx[:]] == cls_trg
         idx_trg = fold_idx[mask_trg]
         idx_org = fold_idx[~mask_trg]
@@ -613,11 +614,11 @@ def generate_dataset(starganv2_path, fake_img_path_preffix, dataset_fold, mode="
                                     batch_size=batch_size,
                                     num_workers=1, persistent_workers=True,
                                     shuffle=True)
-        for batch in tqdm(loader_org, position=1, desc="x_real", leave=True):
+        for batch in tqdm(loader_org, position=0, desc="x_real_batch", leave=True):
             x_real, y_org, groups_org, indices_org = batch
             N = y_org.size(0)
             x_real, y_org = x_real.to(device), y_org.to(device)
-            for _ in range(num_outs_per_domain):
+            for i  in range(num_outs_per_domain):
                 with torch.no_grad():
                     if mode == 'latent':
                         y_trg = torch.tensor([cls_trg] * N).to(device)
@@ -640,30 +641,52 @@ def generate_dataset(starganv2_path, fake_img_path_preffix, dataset_fold, mode="
                             x_ref = x_ref[:N]
                             y_trg = y_trg[:N]
                         s_trg = style_encoder(x_ref, y_trg)
-                    x_fake = (generator(x_real, s_trg) + 1) / 2 #Output of the generator are normalized. So we denormalize.
-                    x_fake.clamp_(0, 1).unsqueeze_(1)
+                    x_fake = (generator(x_real, s_trg) + 1) / 2 # output of the generator are normalized. So we denormalize.
+                    x_fake.clamp_(0, 1).unsqueeze_(1) # clip the value between 0 and 1 and stack generation round after batch dim
                     x_fake = x_fake.cpu()
-                try:
-                    x_fake_stack = x_fake_stack.stack(x_fake, dim=1)
-                except:
-                    x_fake_stack = x_fake
+                    if i == 0:
+                        x_fake_stack = x_fake
+                    else:
+                        x_fake_stack = torch.cat([x_fake_stack, x_fake], dim=1)
             x_fake_stack = x_fake_stack.numpy()
             y_trg = y_trg.cpu().numpy()
             y_org = y_org.cpu().numpy()
+            indices_org = indices_org.cpu().numpy()
+            if not is_dataset_existing:
+                xr.Dataset({"imgs":(["batch", "fake", "channel", "y", "x"], x_fake_stack),
+                             "labels": ("batch", y_trg),
+                             "labels_org": ("batch", y_org),
+                             "groups_org": ("batch", np.array([*groups_org])),
+                             "idx_org": ("batch", indices_org)}).to_zarr(
+                                 store=store, mode="w",
+                                 encoding={"imgs": {"chunks": (1, 1, 1, x_fake_stack.shape[3], x_fake_stack.shape[4])},
+                                           "labels": {"chunks": 1},
+                                           "labels_org": {"chunks": 1},
+                                           "groups_org": {"chunks": 1},
+                                           "idx_org": {"chunks": 1}})
+                is_dataset_existing = True
+            else:
+                xr.Dataset({"imgs":(["batch", "fake", "channel", "y", "x"], x_fake_stack),
+                            "labels": ("batch", y_trg),
+                            "labels_org": ("batch", y_org),
+                            "groups_org": ("batch", np.array([*groups_org])),
+                            "idx_org": ("batch", indices_org)}).to_zarr(
+                                store=store, append_dim="batch")
 
 
-            root.create_dataset('imgs', data=x_fake_stack, overwrite=False, chunks=(1, 1, 1, *x_fake_stack.shape[3:]))
-            root.create_dataset('labels', data=y_trg, overwrite=False, chunks=1)
-            root.create_dataset('labels_org', data=y_org, overwrite=False, chunks=1)
-            root.create_dataset('groups_org', data=groups_org, overwrite=False, dtype=object, object_codec=numcodecs.JSON(), chunks=1)
-            root.create_dataset('idx_org', data=idx_org, overwrite=False, chunks=1)
 
-starganv2_path = "StarGANv2_image_active_fold_0_epoch=29-step=70400.ckpt"
-mode = "ref"
-fold = 0
-split = "train"
-batch_size = 32
-num_outs_per_domain = 10
-fake_img_path_preffix = "image_active_dataset/fake_imgs"
-generate_dataset(starganv2_path, fake_img_path_preffix, dataset_fold, mode="ref", fold=0, split="train",
-                 batch_size=32, num_outs_per_domain=10, use_ema=True, overwrite=True)
+
+
+# starganv2_path = Path("lightning_checkpoint_log") / "StarGANv2_image_active_fold_0_epoch=29-step=70400.ckpt"
+# mode = "ref"
+# fold = 0
+# split = "train"
+# batch_size = 64
+# num_outs_per_domain = 10
+# fake_img_path_preffix = "image_active_dataset/fake_imgs"
+# x_fake_stack = generate_dataset(starganv2_path, fake_img_path_preffix, dataset_fold, mode=mode, fold=fold, split=split,
+#                  batch_size=batch_size, num_outs_per_domain=num_outs_per_domain, use_ema=True)
+
+imgs_zarr_fake = zarr.open(Path("image_active_dataset/fake_imgs_ema/train/fold_0/ref/imgs_labels_groups.zarr"))
+imgs_zarr = zarr.open(Path("image_active_dataset/imgs_labels_groups.zarr"))
+imgs_zarr["labels"].oindex[:]
