@@ -85,6 +85,34 @@ class ImageDataset_Ref(Dataset):
             labels = self.label_transform(labels)
         return imgs, imgs2, labels
 
+
+class ImageDataset_fake(Dataset):
+    def __init__(self, imgs_path, img_transform=None, label_transform=None):
+        super().__init__()
+        self.imgs_zarr = zarr.open(imgs_path)
+        self.length = self.imgs_zarr["imgs"].shape[0]
+        self.num_outs_per_domain = self.imgs_zarr["imgs"].shape[1]
+        self.imgs_path = imgs_path
+        self.img_transform = img_transform
+        self.label_transform = label_transform
+
+    def __len__(self):
+        return self.length * self.num_outs_per_domain
+
+    def __getitem__(self, idx):
+        indices = np.arange(self.length * self.num_outs_per_domain)[idx]
+        true_idx, img_rank = np.divmod(indices, self.num_outs_per_domain)
+        if len(indices.shape) == 0 :
+            imgs = self.imgs_zarr["imgs"].oindex[true_idx, img_rank]
+        else:
+            imgs = np.stack(list(map(lambda x: imgs_zarr["imgs"][*x], zip(true_idx, img_rank))))
+        labels = self.imgs_zarr["labels"].oindex[true_idx]
+        if self.img_transform is not None:
+            imgs = self.img_transform(imgs)
+        if self.label_transform is not None:
+            labels = self.label_transform(labels)
+        return imgs, labels
+
 class RowDataset(Dataset):
     def __init__(self, row, labels, transform=None, target_transform=None):
         super().__init__()

@@ -7,7 +7,7 @@ from tqdm import tqdm
 
 import zarr
 import numcodecs
-import numpy as np 
+import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import seaborn as sns
@@ -71,22 +71,22 @@ def try_function(f: Callable):
     def batched_fn(*item, **kwargs):
         try:
             result = (*item, f(*item, **kwargs))
-            
+
         except:
             result = item
 
-        return result    
+        return result
     return batched_fn
 
 
 # ### ii) function to overcome turn get_jump_image_iter compatible with list and load data in a threaded fashion
 
 def get_jump_image_iter(metadata: pl.DataFrame, channel: List[str],
-                        site:List[str], correction:str=None) -> (pl.DataFrame, List[tuple]): 
+                        site:List[str], correction:str=None) -> (pl.DataFrame, List[tuple]):
     '''
        Load jump image associated to metadata in a threaded fashion.
         ----------
-    Parameters: 
+    Parameters:
         metadata(pl.DataFrame): must have the shape (Metadata_Source", "Metadata_Batch", "Metadata_Plate", "Metadata_Well")
         channel(List[str]): list of channel desired
             Must be in ['DNA', 'ER', 'AGP', 'Mito', 'RNA']
@@ -98,20 +98,20 @@ def get_jump_image_iter(metadata: pl.DataFrame, channel: List[str],
     Return:
         features(pl.DataFrame): DataFrame collecting the metadata, channel, site, correction + the image
         work_fail(List(tuple): List collecting tuple of metadata which failed to load an image
-        
+
     '''
     iterable = [(*metadata.row(i), ch, s, correction)
                for i in range(metadata.shape[0]) for s in site for ch in channel]
     img_list = parallel(iterable, batch_processing(try_function(get_jump_image)))
-    
+
     img_list = sorted(img_list, key=lambda x: len(x))
     fail_success = {k: list(g) for k, g in groupby(img_list, key=lambda x: len(x))}
     if len(fail_success) == 1:
         img_success = list(fail_success.values())[0]
         work_fail = []
-    else: 
+    else:
         work_fail, img_success = fail_success.values()
-    features = pl.DataFrame(img_success, 
+    features = pl.DataFrame(img_success,
                                schema=["Metadata_Source", "Metadata_Batch", "Metadata_Plate", "Metadata_Well",
                                         "channel", "site", "correction",
                                         "img"])
@@ -566,7 +566,7 @@ def generate_dataset(starganv2_path, fake_img_path_preffix, dataset_fold, mode="
             x_real, y_org = x_real.to(device), y_org.to(device)
             for i  in range(num_outs_per_domain):
                 with torch.no_grad():
-                    if mode == 'latent':
+                    if mode == 'lat':
                         y_trg = torch.tensor([cls_trg] * N).to(device)
                         z_trg = torch.randn(N, latent_dim).to(device)
                         s_trg = mapping_network(z_trg, y_trg)
@@ -629,11 +629,12 @@ def plot_fake_img(fake_img_path_preffix, real_img_path,  dataset_fold, mode="ref
     imgs_zarr_fake = zarr.open(fake_img_path / sub_directory)
     fold_idx = dataset_fold[fold][split].fold_idx
     imgs_zarr =  zarr.open(Path(real_img_path))
+    num_cols = imgs_zarr["imgs"][0].shape[0] + 1
 
     real_labels = imgs_zarr["labels"].oindex[fold_idx]
     domains = np.unique(real_labels)
     rng = np.random.default_rng(seed)
-    fig, axs = plt.subplots(len(domains) * num_img_per_domain * (len(domains)-1), 11, figsize=(40, 70), squeeze=False)
+    fig, axs = plt.subplots(len(domains) * num_img_per_domain * (len(domains)-1), num_cols, figsize=(40, 70), squeeze=False)
     N = num_img_per_domain * (len(domains)-1)
     n = (len(domains)-1)
     for i, label in enumerate(domains):
@@ -662,26 +663,27 @@ def plot_fake_img(fake_img_path_preffix, real_img_path,  dataset_fold, mode="ref
 
 
 starganv2_path = Path("lightning_checkpoint_log") / "StarGANv2_image_active_fold_0_epoch=29-step=70400.ckpt"
-mode = "ref"
+mode = "lat"#ref or lat
 fold = 0
 split = "train"
 batch_size = 64
-num_outs_per_domain = 10
+num_outs_per_domain = 5
 fake_img_path_preffix = "image_active_dataset/fake_imgs"
-# x_fake_stack = generate_dataset(starganv2_path, fake_img_path_preffix, dataset_fold, mode=mode, fold=fold, split=split,
-#                                 batch_size=batch_size, num_outs_per_domain=num_outs_per_domain, use_ema=True)
+use_ema = True
+generate_dataset(starganv2_path, fake_img_path_preffix, dataset_fold, mode=mode, fold=fold, split=split,
+                 batch_size=batch_size, num_outs_per_domain=num_outs_per_domain, use_ema=use_ema)
 
 
 num_img_per_domain = 2
 seed = 42
 real_img_path = "image_active_dataset/imgs_labels_groups.zarr"
-plot_fake_img(fake_img_path_preffix, real_img_path,  dataset_fold, mode="ref", fold=0,
-              split="train", use_ema=True, num_img_per_domain=2, seed=42)
+# plot_fake_img(fake_img_path_preffix, real_img_path,  dataset_fold, mode=mode, fold=fold,
+#               split=split, use_ema=use_ema, num_img_per_domain=num_img_per_domain, seed=seed)
 
 
-"""Confusion matrix of real image"""
-# This path is for non-normalized images !
-# "VGG_image_active_fold_0epoch=41-train_acc=0.94-val_acc=0.92.ckpt"
+"""Confusion matrix of real image and fake_img"""
+# # This path is for non-normalized images !
+# # "VGG_image_active_fold_0epoch=41-train_acc=0.94-val_acc=0.92.ckpt"
 
 # VGG_path = "VGG_image_active_fold_0epoch=78-train_acc=0.96-val_acc=0.91.ckpt"
 # VGG_module = LightningModelV2.load_from_checkpoint(Path("lightning_checkpoint_log") / VGG_path,
@@ -710,6 +712,18 @@ plot_fake_img(fake_img_path_preffix, real_img_path,  dataset_fold, mode="ref", f
 #                                num_workers=1, persistent_workers=True,
 #                                shuffle=True)]
 
+# suffix = "_ema" if use_ema else ""
+# fake_img_path = Path(fake_img_path_preffix + suffix)
+# sub_directory = Path(split) / f"fold_{fold}" / mode / "imgs_labels_groups.zarr"
+# imgs_fake_path = fake_img_path / sub_directory
+# dataset_fake = custom_dataset.ImageDataset_fake(imgs_fake_path,
+#                                                 img_transform=v2.Compose([v2.Lambda(lambda img:
+#                                                                                      torch.tensor(img, dtype=torch.float32)),
+#                                                                           v2.Normalize(mean=len(channel)*[0.5],
+#                                                                                        std=len(channel)*[0.5])]),
+#                                                 label_transform=lambda label: torch.tensor(label, dtype=torch.long))
+# fake_dataloader = DataLoader(dataset_fake, batch_size=batch_size, num_workers=1, persistent_workers=True)
+
 # # Validation should be handled on a single devide (not ddp) Lightning Recommendation
 # torch.set_float32_matmul_precision('medium') #try 'high')
 # seed_everything(42, workers=True)
@@ -728,8 +742,24 @@ plot_fake_img(fake_img_path_preffix, real_img_path,  dataset_fold, mode="ref", f
 # resource.setrlimit(resource.RLIMIT_NOFILE, (hard, hard))
 
 
-# trainer.test(VGG_module, train_dataloaders[0])
-# trainer.logger = pl_loggers.TensorBoardLogger(save_dir=Path("logs"), name="VGG_image_active_test")
-# trainer.test(VGG_module, val_dataloaders[0])
-# trainer.logger = pl_loggers.TensorBoardLogger(save_dir=Path("logs"), name="VGG_image_active_test")
-# trainer.test(VGG_module, test_dataloaders[0])
+# # trainer.test(VGG_module, train_dataloaders[0])
+# # trainer.logger = pl_loggers.TensorBoardLogger(save_dir=Path("logs"), name="VGG_image_active_test")
+# # trainer.test(VGG_module, val_dataloaders[0])
+# # trainer.logger = pl_loggers.TensorBoardLogger(save_dir=Path("logs"), name="VGG_image_active_test")
+# # trainer.test(VGG_module, test_dataloaders[0])
+# # trainer.logger = pl_loggers.TensorBoardLogger(save_dir=Path("logs"), name="VGG_image_active_test")
+# trainer.test(VGG_module, fake_dataloader)
+
+
+# # imgs_zarr = zarr.open(imgs_fake_path)
+# # length = imgs_zarr["imgs"].shape[0]
+# # num_outs_per_domain = imgs_zarr["imgs"].shape[1]
+# # indices = np.arange(length * num_outs_per_domain)[[3, 100, 20]]
+# # true_idx, img_rank = np.divmod(indices, num_outs_per_domain)
+
+# # imgs2 = np.stack(list(map(lambda x: imgs_zarr["imgs"][*x], zip(true_idx, img_rank))))
+
+# # unique_true_idx, unique_img_rank = np.array(list(set(true_idx))), np.array(list(set(img_rank)))
+# # map_true_idx, map_img_rank = {idx: i for i, idx in enumerate(unique_true_idx)}, {idx: i for i, idx in enumerate(unique_img_rank)}
+# # new_true_idx, new_img_rank = [map_true_idx[idx] for idx in true_idx], [map_img_rank[idx] for idx in img_rank]
+# # imgs1 = imgs_zarr["imgs"].oindex[unique_true_idx, unique_img_rank][new_true_idx, new_img_rank]
