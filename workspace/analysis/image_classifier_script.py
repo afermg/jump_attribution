@@ -48,6 +48,9 @@ from lightning.pytorch import loggers as pl_loggers
 from lightning.pytorch.callbacks import ModelCheckpoint
 from lightning.pytorch.utilities.combined_loader import CombinedLoader
 
+from torchmetrics.image.fid import FrechetInceptionDistance
+from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
+
 from pathlib import Path
 import xarray as xr
 
@@ -527,7 +530,6 @@ def generate_dataset(starganv2_path, fake_img_path_preffix, dataset_fold, mode="
     sub_directory = Path(split) / f"fold_{fold}" / mode / "imgs_labels_groups.zarr"
 
     store = zarr.DirectoryStore(fake_img_path / sub_directory)
-    root = zarr.open_group(store=store, mode="a")
     is_dataset_existing = False
 
     dataset = dataset_fold[fold][split]
@@ -620,7 +622,7 @@ def generate_dataset(starganv2_path, fake_img_path_preffix, dataset_fold, mode="
                                 store=store, append_dim="batch")
 
 
-def plot_fake_img(fake_img_path_preffix, real_img_path,  dataset_fold, mode="ref", fold=0, split="train", use_ema=True,
+def plot_fake_img(fake_img_path_preffix, real_img_path, dataset_fold, mode="ref", fold=0, split="train", use_ema=True,
                   num_img_per_domain=2, seed=42):
 
     suffix = "_ema" if use_ema else ""
@@ -670,8 +672,8 @@ batch_size = 64
 num_outs_per_domain = 5
 fake_img_path_preffix = "image_active_dataset/fake_imgs"
 use_ema = True
-generate_dataset(starganv2_path, fake_img_path_preffix, dataset_fold, mode=mode, fold=fold, split=split,
-                 batch_size=batch_size, num_outs_per_domain=num_outs_per_domain, use_ema=use_ema)
+# generate_dataset(starganv2_path, fake_img_path_preffix, dataset_fold, mode=mode, fold=fold, split=split,
+#                  batch_size=batch_size, num_outs_per_domain=num_outs_per_domain, use_ema=use_ema)
 
 
 num_img_per_domain = 2
@@ -680,6 +682,11 @@ real_img_path = "image_active_dataset/imgs_labels_groups.zarr"
 # plot_fake_img(fake_img_path_preffix, real_img_path,  dataset_fold, mode=mode, fold=fold,
 #               split=split, use_ema=use_ema, num_img_per_domain=num_img_per_domain, seed=seed)
 
+
+suffix = "_ema" if use_ema else ""
+fake_img_path = Path(fake_img_path_preffix + suffix)
+sub_directory = Path(split) / f"fold_{fold}" / mode / "imgs_labels_groups.zarr"
+imgs_fake_path = fake_img_path / sub_directory
 
 """Confusion matrix of real image and fake_img"""
 # # This path is for non-normalized images !
@@ -712,10 +719,6 @@ real_img_path = "image_active_dataset/imgs_labels_groups.zarr"
 #                                num_workers=1, persistent_workers=True,
 #                                shuffle=True)]
 
-# suffix = "_ema" if use_ema else ""
-# fake_img_path = Path(fake_img_path_preffix + suffix)
-# sub_directory = Path(split) / f"fold_{fold}" / mode / "imgs_labels_groups.zarr"
-# imgs_fake_path = fake_img_path / sub_directory
 # dataset_fake = custom_dataset.ImageDataset_fake(imgs_fake_path,
 #                                                 img_transform=v2.Compose([v2.Lambda(lambda img:
 #                                                                                      torch.tensor(img, dtype=torch.float32)),
@@ -763,3 +766,51 @@ real_img_path = "image_active_dataset/imgs_labels_groups.zarr"
 # # map_true_idx, map_img_rank = {idx: i for i, idx in enumerate(unique_true_idx)}, {idx: i for i, idx in enumerate(unique_img_rank)}
 # # new_true_idx, new_img_rank = [map_true_idx[idx] for idx in true_idx], [map_img_rank[idx] for idx in img_rank]
 # # imgs1 = imgs_zarr["imgs"].oindex[unique_true_idx, unique_img_rank][new_true_idx, new_img_rank]
+
+def compute_fid_lpips(fake_img_path_preffix,  dataset_fold, mode=mode, fold=fold,
+                      split=split, use_ema=use_ema, batch_size,  num_img_per_domain=num_img_per_domain, seed=seed):
+
+    # set device
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    # load fake dataset
+    suffix = "_ema" if use_ema else ""
+    fake_img_path = Path(fake_img_path_preffix + suffix)
+    sub_directory = Path(split) / f"fold_{fold}" / mode / "imgs_labels_groups.zarr"
+    imgs_zarr_fake = zarr.open(fake_img_path / sub_directory)
+
+    # load real dataset and fetch fold index and labels.
+    dataset = dataset_fold[fold][split]
+    real_img_path, channel, fold_idx = dataset.imgs_path, dataset.channel, dataset.fold_idx
+    imgs_zarr_real =  zarr.open(Path(real_img_path))
+    labels_real = imgs_zarr_real["labels"].oindex[fold_idx]
+
+    # torchmetrics
+    fid_metric = FrechetInceptionDistance(feature=2048, reset_real_features=True, normalize=True, input_img_size=tuple(dataset[0][0].shape[-3:])).to(device)
+    # torchmetric recommendation mode
+    fid_metric.set_dtype(torch.float64)
+    lpips_metric = LearnedPerceptualImagePatchSimilarity().to(device)
+
+    domains = np.unique(real_labels)
+    for label in domains:
+        label_real_idx = fold_idx[labels_real == label]
+
+        loader_real = DataLoader(custom_dataset.ImageDataset(real_img_path,
+                                                            channel=channel,
+                                                            fold_idx=label_real_idx,
+                                                            img_transform=v2.Lambda(lambda img: torch.tensor(img, dtype=torch.float32)),
+                                                            label_transform=lambda label: torch.tensor(label, dtype=torch.long)),
+                                 batch_size=batch_size,
+                                 num_workers=1, persistent_workers=True)
+        # Allow to no reset real statistics as we compute for multiple pair
+        # for instance we compare statistics compute on 0 with generated image (1 to 0, 2 to 0, 3 to 0)
+        fid_metric.reset_real_features = False
+        for batch in loader_real:
+            X, y = batch
+            X = X.to(device)
+            fid_metric.update(X, real=True)
+
+        domains_org = [l for l in domains if l != label]
+        for label_org in domains_org:
+            fake_idx = np.arange(len(imgs_zarr_fake["labels"]))[(imgs_zarr_fake["labels"].oindex[:] == label) &
+                                                                (imgs_zarr_fake["labels_org"].oindex[:] == label_org)]

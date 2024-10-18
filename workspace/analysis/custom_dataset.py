@@ -87,7 +87,7 @@ class ImageDataset_Ref(Dataset):
 
 
 class ImageDataset_fake(Dataset):
-    def __init__(self, imgs_path, img_transform=None, label_transform=None):
+    def __init__(self, imgs_path, mask_index=None, img_transform=None, label_transform=None):
         super().__init__()
         self.imgs_zarr = zarr.open(imgs_path)
         self.length = self.imgs_zarr["imgs"].shape[0]
@@ -95,12 +95,18 @@ class ImageDataset_fake(Dataset):
         self.imgs_path = imgs_path
         self.img_transform = img_transform
         self.label_transform = label_transform
+        if mask_index is None:
+            self.indices_tot = np.arange(self.length * self.num_outs_per_domain)
+        else:
+            list_idx = (mask_index * self.num_outs_per_domain).reshape(-1, 1)
+            add_index = np.arange(self.num_outs_per_domain)
+            self.indices_tot = (list_idx + add_index).reshape(-1)
 
     def __len__(self):
-        return self.length * self.num_outs_per_domain
+        return len(self.indices_tot)
 
     def __getitem__(self, idx):
-        indices = np.arange(self.length * self.num_outs_per_domain)[idx]
+        indices = self.indices_tot[idx]
         true_idx, img_rank = np.divmod(indices, self.num_outs_per_domain)
         if len(indices.shape) == 0 :
             imgs = self.imgs_zarr["imgs"].oindex[true_idx, img_rank]
