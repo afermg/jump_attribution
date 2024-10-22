@@ -767,8 +767,8 @@ imgs_fake_path = fake_img_path / sub_directory
 # # new_true_idx, new_img_rank = [map_true_idx[idx] for idx in true_idx], [map_img_rank[idx] for idx in img_rank]
 # # imgs1 = imgs_zarr["imgs"].oindex[unique_true_idx, unique_img_rank][new_true_idx, new_img_rank]
 
-def compute_fid_lpips(fake_img_path_preffix,  dataset_fold, mode=mode, fold=fold,
-                      split=split, use_ema=use_ema, batch_size,  num_img_per_domain=num_img_per_domain, seed=seed):
+def compute_fid_lpips(fake_img_path_preffix,  dataset_fold, mode="ref", fold=0,
+                      split="train", use_ema=True, batch_size=64):
 
     # set device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -790,11 +790,11 @@ def compute_fid_lpips(fake_img_path_preffix,  dataset_fold, mode=mode, fold=fold
     fid_metric = FrechetInceptionDistance(feature=2048, reset_real_features=True, normalize=True, input_img_size=tuple(dataset[0][0].shape[-3:])).to(device)
     # torchmetric recommendation mode
     fid_metric.set_dtype(torch.float64)
-    lpips_metric = LearnedPerceptualImagePatchSimilarity(net="alex", reduction="mean", normalize=True).to(device)
-    fid_dict = {f"from_{label_org}_to_{label}" for label_org in domains for label in domains if label != label_org}
-    lpips_dict = {f"from_{label_org}_to_{label}" for label_org in domains for label in domains if label != label_org}
+    lpips_metric = LearnedPerceptualImagePatchSimilarity(net_type="alex", reduction="mean", normalize=True).to(device)
 
-    domains = np.unique(real_labels)
+    domains = np.unique(labels_real)
+    fid_dict = {f"from_{label_org}_to_{label}": 0 for label_org in domains for label in domains if label != label_org}
+    lpips_dict = {f"from_{label_org}_to_{label}": 0 for label_org in domains for label in domains if label != label_org}
     for label in tqdm(domains, position=0, desc="y_trg"):
         label_real_idx = fold_idx[labels_real == label]
 
@@ -808,13 +808,13 @@ def compute_fid_lpips(fake_img_path_preffix,  dataset_fold, mode=mode, fold=fold
         # Allow to no reset real statistics as we compute for multiple pair
         # for instance we compare statistics compute on 0 with generated image (1 to 0, 2 to 0, 3 to 0)
         fid_metric.reset_real_features = False
-        for batch in loader_real:
+        for batch in tqdm(loader_real, position=0, desc="fid_true", leave=False):
             X, y = batch
             X = X.to(device)
             fid_metric.update(X, real=True)
 
         domains_org = [l for l in domains if l != label]
-        for label_org in tqdm(domains_org, position=0, desc="y_org":
+        for label_org in tqdm(domains_org, position=0, desc="y_org"):
             fake_idx = np.arange(len(imgs_zarr_fake["labels"]))[(imgs_zarr_fake["labels"].oindex[:] == label) &
                                                                 (imgs_zarr_fake["labels_org"].oindex[:] == label_org)]
             loader_fake = DataLoader(custom_dataset.ImageDataset_fake(imgs_fake_path,
@@ -824,7 +824,7 @@ def compute_fid_lpips(fake_img_path_preffix,  dataset_fold, mode=mode, fold=fold
                                      batch_size=batch_size,
                                      num_workers=1, persistent_workers=True)
             # compute fid dist
-            for batch in loader_fake:
+            for batch in tqdm(loader_fake, position=0, desc="fid_false", leave=False):
                 X, y = batch
                 X = X.to(device)
                 fid_metric.update(X, real=False)
@@ -834,7 +834,7 @@ def compute_fid_lpips(fake_img_path_preffix,  dataset_fold, mode=mode, fold=fold
 
             # comput lpips score
             img_transform = v2.Lambda(lambda img: torch.tensor(img, dtype=torch.float32))
-            for batch_idx in np.array_split(fake_index, batch_size):
+            for batch_idx in tqdm(np.array_split(fake_idx, batch_size//2), position=0, desc="lpips", leave=False):
                 # compute similarity between every pair of generated image from a same input but with different ref or lat code.
                 for i in range(num_outs_per_domain-1):
                     imgs1 = img_transform(imgs_zarr_fake["imgs"].oindex[batch_idx, i]).to(device)
@@ -850,3 +850,6 @@ def compute_fid_lpips(fake_img_path_preffix,  dataset_fold, mode=mode, fold=fold
 
     return fid_metric, lpips_metric
 
+
+fid_metric, lpips_metric = compute_fid_lpips(fake_img_path_preffix,  dataset_fold, mode=mode, fold=fold,
+                                             split=split, use_ema=use_ema, batch_size=256)
