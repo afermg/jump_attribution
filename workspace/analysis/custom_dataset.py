@@ -122,18 +122,19 @@ class ImageDataset_fake(Dataset):
 
 class ImageDataset_real_fake(Dataset):
     def __init__(self, imgs_real_path, imgs_fake_path,
-                 org_to_trg_label:Optional[list[tuple[int]]]=None,
+                 channel, org_to_trg_label:Optional[list[tuple[int]]]=None,
                  img_transform=None, label_transform=None):
         super().__init__()
         self.imgs_real_path = imgs_real_path
         self.imgs_fake_path = imgs_fake_path
         self.imgs_zarr_real = zarr.open(imgs_real_path)
         self.imgs_zarr_fake = zarr.open(imgs_fake_path)
-        self.org_to_trg_class = org_to_trg_class
+        self.channel = channel
+        self.org_to_trg_label = org_to_trg_label
         self.img_transform = img_transform
         self.label_transform = label_transform
 
-        if self.org_to_trg_class is not None:
+        if self.org_to_trg_label is not None:
             mask = np.sum([(self.imgs_zarr_fake["labels"].oindex[:] == label) &
                            (self.imgs_zarr_fake["labels_org"].oindex[:] == label_org)
                            for (label_org, label) in self.org_to_trg_label], axis=0)
@@ -150,8 +151,8 @@ class ImageDataset_real_fake(Dataset):
         # the first generated is chosen by default but it can be decided otherwise.
         imgs_fake = self.imgs_zarr_fake["imgs"].oindex[indices, 0]
         labels_fake = self.imgs_zarr_fake["labels"].oindex[indices]
-        imgs_real = self.imgs_zarr_real["imgs"].oindex[self.imgs_zarr_fake["labels_org"].oindex[indices]]
-        labels_real = self.imgs_zarr_real["labels"].oindex[self.imgs_zarr_fake["labels_org"].oindex[indices]]
+        imgs_real = self.imgs_zarr_real["imgs"].oindex[self.imgs_zarr_fake["idx_org"].oindex[indices], self.channel]
+        labels_real = self.imgs_zarr_real["labels"].oindex[self.imgs_zarr_fake["idx_org"].oindex[indices]]
         if self.img_transform is not None:
             imgs_fake = self.img_transform(imgs_fake)
             imgs_real = self.img_transform(imgs_real)
