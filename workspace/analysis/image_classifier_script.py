@@ -859,6 +859,8 @@ def compute_fid_lpips(fake_img_path_preffix,  dataset_fold, mode="ref",
 
     return fid_dict, lpips_dict
 
+# Because there is a large number of cpu available and that we are working with a relatively small number of samples, it leads to significant overhead
+# when computing linalg.sqrtm within the fid metric. So need to turn down the number of thread to reduce this overhead.
 os.environ["OMP_NUM_THREADS"] = "1"
 fid_dict, lpips_dict = compute_fid_lpips(fake_img_path_preffix,  dataset_fold, mode=mode, fold=fold,
                                          split=split, use_ema=use_ema, batch_size=512)
