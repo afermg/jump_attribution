@@ -3,6 +3,7 @@ import torch
 from torch.utils.data import Dataset
 import zarr
 from itertools import groupby
+from typing import Optional
 
 class ImageDataset(Dataset):
     def __init__(self, imgs_path, channel, fold_idx, img_transform=None, label_transform=None):
@@ -90,13 +91,12 @@ class ImageDataset_fake(Dataset):
     def __init__(self, imgs_path, mask_index=None, img_transform=None, label_transform=None):
         super().__init__()
         self.imgs_zarr = zarr.open(imgs_path)
-        self.length = self.imgs_zarr["imgs"].shape[0]
         self.num_outs_per_domain = self.imgs_zarr["imgs"].shape[1]
         self.imgs_path = imgs_path
         self.img_transform = img_transform
         self.label_transform = label_transform
         if mask_index is None:
-            self.indices_tot = np.arange(self.length * self.num_outs_per_domain)
+            self.indices_tot = np.arange(self.imgs_zarr["imgs"].shape[0] * self.num_outs_per_domain)
         else:
             list_idx = (mask_index * self.num_outs_per_domain).reshape(-1, 1)
             add_index = np.arange(self.num_outs_per_domain)
@@ -111,7 +111,7 @@ class ImageDataset_fake(Dataset):
         if len(indices.shape) == 0 :
             imgs = self.imgs_zarr["imgs"].oindex[true_idx, img_rank]
         else:
-            imgs = np.stack(list(map(lambda x: imgs_zarr["imgs"][*x], zip(true_idx, img_rank))))
+            imgs = np.stack(list(map(lambda x: self.imgs_zarr["imgs"][*x], zip(true_idx, img_rank))))
         labels = self.imgs_zarr["labels"].oindex[true_idx]
         if self.img_transform is not None:
             imgs = self.img_transform(imgs)
@@ -119,6 +119,52 @@ class ImageDataset_fake(Dataset):
             labels = self.label_transform(labels)
         return imgs, labels
 
+
+class ImageDataset_real_fake(Dataset):
+    def __init__(self, imgs_real_path, imgs_fake_path,
+                 org_to_trg_label:Optional[list[tuple[int]]]=None,
+                 img_transform=None, label_transform=None):
+        super().__init__()
+        self.imgs_real_path = imgs_real_path
+        self.imgs_fake_path = imgs_fake_path
+        self.imgs_zarr_real = zarr.open(imgs_real_path)
+        self.imgs_zarr_fake = zarr.open(imgs_fake_path)
+        self.org_to_trg_class = org_to_trg_class
+        self.img_transform = img_transform
+        self.label_transform = label_transform
+
+        if self.org_to_trg_class is not None:
+            mask = np.sum([(self.imgs_zarr_fake["labels"].oindex[:] == label) &
+                           (self.imgs_zarr_fake["labels_org"].oindex[:] == label_org)
+                           for (label_org, label) in self.org_to_trg_label], axis=0)
+            self.indices_tot = np.arange(self.imgs_zarr_fake["labels"].shape[0])[mask]
+        else:
+            self.indices_tot = np.arange(self.imgs_zarr_fake["labels"].shape[0])
+
+
+    def __len__(self):
+        return len(self.indices_tot)
+
+    def __getitem__(self, idx):
+        indices = self.indices_tot[idx]
+        # the first generated is chosen by default but it can be decided otherwise.
+        imgs_fake = self.imgs_zarr_fake["imgs"].oindex[indices, 0]
+        labels_fake = self.imgs_zarr_fake["labels"].oindex[indices]
+        imgs_real = self.imgs_zarr_real["imgs"].oindex[self.imgs_zarr_fake["labels_org"].oindex[indices]]
+        labels_real = self.imgs_zarr_real["labels"].oindex[self.imgs_zarr_fake["labels_org"].oindex[indices]]
+        if self.img_transform is not None:
+            imgs_fake = self.img_transform(imgs_fake)
+            imgs_real = self.img_transform(imgs_real)
+        if self.label_transform is not None:
+            labels_fake = self.label_transform(labels_fake)
+            labels_real = self.label_transform(labels_real)
+        return imgs_real, imgs_fake, labels_real, labels_fake
+
+
+
+"""
+----------------- Only for profiles -----------------
+"""
 class RowDataset(Dataset):
     def __init__(self, row, labels, transform=None, target_transform=None):
         super().__init__()
