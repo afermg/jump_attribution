@@ -5,23 +5,46 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from captum.attr import IntegratedGradients, Saliency
+from captum.attr import Saliency, IntegratedGradients, DeepLift, GuidedBackprop, GuidedGradCam, LayerGradCam
+from captum._utils.gradient import compute_layer_gradients_and_eval
+torch.manual_seed(42)
+np.random.seed(42)
 
-torch.manual_seed(123)
-np.random.seed(123)
+# General Attribution function
+def Attribution(model, method, inputs, baselines, inputs_targe):
+    grad_func = method(model)
+    return grad_func.attribute(inputs=inputs, baselines=baselines, target=inputs_target)
 
 # D_INGRADS (Input * Gradient)
+class D_INGRADS(Saliency):
+    def __init__(self, model):
+        super().__init__(model)
 
-def D_INGRADS(model, X_real, X_fake, y_fake):
-    grads_func = Saliency(model)
-    grads_fake = grad_func.attribute(input=X_fake, target=y_fake)
-    return torch.abs(grads_fake * (X_real - X_fake))
-
+    def attribute(self, inputs, baselines, target):
+        # Call Saliency's attribute method to get the gradients
+        ingrad = super().attribute(inputs=inputs, target=target)
+        # Modify the gradients as per your original D_INGRADS function
+        return torch.abs(ingrad * (inputs - baselines))
 
 # D_IG (Integrated Gradient)
+
 # D_DL (DeepLift)
+
 # D_GC (GradCAM)
+
 # D_GGC (GuidedGradCAM)
+
+
+# class D_GCC():
+#     def __init__(self, model):
+#         layer_name, layer = next((name, module) for name, module in reversed(list(model.named_modules())) if isinstance(module, torch.nn.Conv2d))
+
+
+
+# D_LGC (LayerGradCAM)
+
+# D_GBP (GuidedBackprop)
+
 # Random
 # Residual
 """
@@ -42,6 +65,7 @@ import custom_dataset
 from lightning_parallel_training import LightningModelV2
 
 from pathlib import Path
+import torch.nn.functional as F
 
 # select device
 device = ("cuda" if torch.cuda.is_available() else "cpu")
@@ -74,6 +98,9 @@ dataset_real_fake = custom_dataset.ImageDataset_real_fake(imgs_real_path, imgs_f
                                                                                     v2.Normalize(mean=len(channel)*[0.5],
                                                                                                  std=len(channel)*[0.5])]),
                                                           label_transform=lambda label: torch.tensor(label, dtype=torch.long))
+
+dataloader_real_fake = DataLoader(dataset_real_fake, batch_size=batch_size, num_workers=1, persistent_workers=True)
+
 # load trained classifier
 VGG_path = "VGG_image_active_fold_0epoch=78-train_acc=0.96-val_acc=0.91.ckpt"
 VGG_module = LightningModelV2.load_from_checkpoint(Path("lightning_checkpoint_log") / VGG_path,
@@ -81,5 +108,21 @@ VGG_module = LightningModelV2.load_from_checkpoint(Path("lightning_checkpoint_lo
 VGG_model = VGG_module.model.eval().to(device)
 
 # need to predict the label of the input and then do attribution technique
+for X_real, X_fake, y_real, y_fake in dataloader_real_fake:
+    X_real, X_fake, y_fake = X_real.to(device), X_fake.to(device), y_fake.to(device)
+    X_real.requires_grad, X_fake.requires_grad = True, True
+    # with torch.no_grad():
+    #     y_hat_real = F.softmax(VGG_model(X_real), dim=1).argmax(dim=1)
+    #     y_hat_fake = F.softmax(VGG_model(X_fake), dim=1).argmax(dim=1)
+    # saliency, grad_fake = D_INGRADS(VGG_model, X_real, X_fake, y_fake)
+    break
 
-imgs_real, imgs_fake, labels_real, labels_fake = dataset_real_fake[:10]
+
+layer_name, layer = next((name, module) for name, module in reversed(list(VGG_model.named_modules())) if isinstance(module, torch.nn.Conv2d))
+VGG_model.zero_grad()
+# compute_layer_gradients_and_eval(VGG_model,
+#                                  layer,
+#                                  X_real,
+#                                  y_real,
+
+#                                  )
