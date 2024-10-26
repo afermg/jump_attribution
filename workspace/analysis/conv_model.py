@@ -61,7 +61,7 @@ class VGG_ch(nn.Module):
         self.n_lin_block = n_lin_block
         self.conv_n_ch = conv_n_ch
         self.fc_dim = self.conv_n_ch * (2 ** (self.n_conv_block - 1)) * ((self.img_size // (2 ** self.n_conv_block)) ** 2)
-        self.relu = nn.ReLU()
+        # self.relu = nn.ReLU() # Need to redefine relu every time so it work with DeepLigt, so instead of self.relu, do nn.ReLU every time.
         self.drop = nn.Dropout(p=p_dropout)
         self.sequence = nn.Sequential(
                         *[self.conv_block((self.conv_n_ch * (2 ** (i-1)) if i != 0 else self.img_depth),
@@ -78,7 +78,7 @@ class VGG_ch(nn.Module):
             *sum([(nn.Conv2d(in_channels=(in_ch if i==0 else out_ch), out_channels=out_ch,
                              kernel_size=3, stride=1, padding=1),
                    nn.BatchNorm2d(out_ch),
-                   self.relu)
+                   nn.ReLU())
               for i in range(num_conv)], ()),
             nn.MaxPool2d(kernel_size=2, stride=2, padding=0)
         )
@@ -86,7 +86,7 @@ class VGG_ch(nn.Module):
     def linear_block(self, in_dim, out_dim):
         return nn.Sequential(
             nn.Linear(in_features=in_dim, out_features=out_dim),
-            self.relu,
+            nn.ReLU(),
             self.drop
         )
 

@@ -11,7 +11,7 @@ from torch.nn import Module
 
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
-from captum.attr import Saliency, IntegratedGradients, DeepLift, GuidedBackprop, GuidedGradCam, LayerGradCam, LayerActivation
+from captum.attr import Saliency, IntegratedGradients, DeepLift, GuidedBackprop, LayerGradCam, LayerActivation
 from captum._utils.gradient import compute_layer_gradients_and_eval
 from captum._utils.common import (
     _format_additional_forward_args,
@@ -36,11 +36,18 @@ def Attribution(model: nn.Module,
                 inputs: Union[Tensor, Tuple[Tensor, ...]],
                 baselines: BaselineType = None,
                 inputs_target: TargetType = None,
+                baselines_target: TargetType = None,
                 method_kwargs: Optional[Dict[str, Any]] = None,
                 attr_kwargs: Optional[Dict[str, Any]] = None,
                 ):
-    grad_func = method(model, **method_kwargs)
-    return grad_func.attribute(inputs=inputs, baselines=baselines, target=inputs_target, **attr_kwargs)
+    if method_kwargs is not None:
+        grad_func = method(model, **method_kwargs)
+    else:
+        grad_func = method(model)
+    if attr_kwargs is not None:
+        return grad_func.attribute(inputs=inputs, baselines=baselines, target=inputs_target, **attr_kwargs)
+    else:
+        return grad_func.attribute(inputs=inputs, baselines=baselines, target=inputs_target)
 
 # D_INGRADS (Input * Gradient)
 #
@@ -465,6 +472,193 @@ class D_GradCam(LayerGradCam):
 
 # D_GGC (GuidedGradCAM)
 
+class D_GuidedGradCam(D_GradCam):
+    def __init__(self, model: nn.Module, num_layer: int = -1):
+        """
+        Args:
+
+            model (nn.Module): The  model for which to compute attribution. Must contain a convolution layer.
+            num_layer (Optional, int): the conv layer number considered.
+            Default: -1 # the last one as being the recommended workflow for GradCAM
+
+        """
+        super().__init__(model, num_layer)
+        self.guided_backprop = GuidedBackprop(model)
+
+    def attribute(self,
+        inputs: Union[Tensor, Tuple[Tensor, ...]],
+        baselines: BaselineType = None,
+        target: TargetType = None,
+        additional_forward_args: Any = None,
+        average_grad_channels: bool = True,
+        attribute_to_layer_input: bool = False,
+        relu_attributions: bool = False,
+        attr_dim_summation: bool = True,
+        attr_interpolate: bool = True,
+    ) -> Union[Tensor, Tuple[Tensor, ...]]:
+
+
+        """
+        Args:
+
+            inputs (Tensor or tuple[Tensor, ...]): Input for which attributions
+                        are computed. If forward_func takes a single
+                        tensor as input, a single input tensor should be provided.
+                        If forward_func takes multiple tensors as input, a tuple
+                        of the input tensors should be provided. It is assumed
+                        that for all given input tensors, dimension 0 corresponds
+                        to the number of examples, and if multiple input tensors
+                        are provided, the examples must be aligned appropriately.
+        baselines (scalar, Tensor, tuple of scalar, or Tensor, optional):
+                        Baselines define the starting point from which integral
+                        is computed and can be provided as:
+
+                        - a single tensor, if inputs is a single tensor, with
+                          exactly the same dimensions as inputs or the first
+                          dimension is one and the remaining dimensions match
+                          with inputs.
+
+                        - a single scalar, if inputs is a single tensor, which will
+                          be broadcasted for each input value in input tensor.
+
+                        - a tuple of tensors or scalars, the baseline corresponding
+                          to each tensor in the inputs' tuple can be:
+
+                          - either a tensor with matching dimensions to
+                            corresponding tensor in the inputs' tuple
+                            or the first dimension is one and the remaining
+                            dimensions match with the corresponding
+                            input tensor.
+
+                          - or a scalar, corresponding to a tensor in the
+                            inputs' tuple. This scalar value is broadcasted
+                            for corresponding input tensor.
+
+                        In the cases when `baselines` is not provided, we internally
+                        use zero scalar corresponding to each input tensor.
+            target (int, tuple, Tensor, or list, optional): Output indices for
+                        which gradients are computed (for classification cases,
+                        this is usually the target class).
+                        If the network returns a scalar value per example,
+                        no target index is necessary.
+                        For general 2D outputs, targets can be either:
+
+                        - a single integer or a tensor containing a single
+                          integer, which is applied to all input examples
+
+                        - a list of integers or a 1D tensor, with length matching
+                          the number of examples in inputs (dim 0). Each integer
+                          is applied as the target for the corresponding example.
+
+                        For outputs with > 2 dimensions, targets can be either:
+
+                        - A single tuple, which contains #output_dims - 1
+                          elements. This target index is applied to all examples.
+
+                        - A list of tuples with length equal to the number of
+                          examples in inputs (dim 0), and each tuple containing
+                          #output_dims - 1 elements. Each tuple is applied as the
+                          target for the corresponding example.
+
+                        Default: None
+            additional_forward_args (Any, optional): If the forward function
+                        requires additional arguments other than the inputs for
+                        which attributions should not be computed, this argument
+                        can be provided. It must be either a single additional
+                        argument of a Tensor or arbitrary (non-tuple) type or a
+                        tuple containing multiple additional arguments including
+                        tensors or any arbitrary python types. These arguments
+                        are provided to forward_func in order following the
+                        arguments in inputs.
+                        Note that attributions are not computed with respect
+                        to these arguments.
+                        Default: None
+            attribute_to_layer_input (bool, optional): Indicates whether to
+                        compute the attributions with respect to the layer input
+                        or output. If `attribute_to_layer_input` is set to True
+                        then the attributions will be computed with respect to the
+                        layer input, otherwise it will be computed with respect
+                        to layer output.
+                        Note that currently it is assumed that either the input
+                        or the outputs of internal layers, depending on whether we
+                        attribute to the input or output, are single tensors.
+                        Support for multiple tensors will be added later.
+                        Default: False
+            average_grad_channels (bool, optional): Indicate whether to
+                        average gradient of across channels before multiplying by the
+                        feature map. The default is set to true as it is the default
+                        GradCAM behavior.
+                        Default: True
+            relu_attributions (bool, optional): Indicates whether to
+                        apply a ReLU operation on the final attribution,
+                        returning only non-negative attributions. Setting this
+                        flag to True matches the original GradCAM algorithm,
+                        otherwise, by default, both positive and negative
+                        attributions are returned.
+                        Default: False
+            attr_dim_summation (bool, optional): Indicates whether to
+                        sum attributions along dimension 1 (usually channel).
+                        The default (True) means to sum along dimension 1.
+                        Default: True
+            attr_interpolate (bool, optional): Indicates whether to interpolate the
+                        attribution so it match input dim.
+                        Default: True
+
+        Returns:
+            *Tensor* or *tuple[Tensor, ...]* of **attributions**:
+            - **attributions** (*Tensor* or *tuple[Tensor, ...]*):
+                        Attributions based on GradCAM method.
+                        Attributions will be the same size as the
+                        output of the given layer, except for dimension 2,
+                        which will be 1 due to summing over channels.
+                        Attributions are returned in a tuple if
+                        the layer inputs / outputs contain multiple tensors,
+                        otherwise a single tensor is returned.
+        Examples::
+
+            >>> # ImageClassifier takes a single input tensor of images Nx3x32x32,
+            >>> # and returns an Nx10 tensor of class probabilities.
+            >>> # It contains a layer conv4, which is an instance of nn.conv2d,
+            >>> # and the output of this layer has dimensions Nx50x8x8.
+            >>> # It is the last convolution layer, which is the recommended
+            >>> # use case for GradCAM.
+            >>> net = ImageClassifier()
+            >>> layer_gc = D_GradCam(net, net.conv4)
+            >>> input = torch.randn(2, 3, 32, 32, requires_grad=True)
+            >>> # Computes layer GradCAM for class 3 relative to baseline.
+            >>> # attribution size matches layer output except for dimension
+            >>> # 1, so dimensions of attr would be Nx1x8x8.
+            >>> attr = layer_gc.attribute(input, baseline,  3)
+            >>> # GradCAM attributions are often upsampled and viewed as a
+            >>> # mask to the input, since the convolutional layer output
+            >>> # spatially matches the original input image.
+            >>> # This can be done with LayerAttribution's interpolate method.
+            >>> # This is the default behavior but it can be cancelled.
+            >>> upsampled_attr = LayerAttribution.interpolate(attr, (32, 32))
+
+        """
+
+        is_inputs_tuple = _is_tuple(inputs)
+        formatted_inputs, formatted_baselines = _format_input_baseline(inputs, baselines)
+        # Call Saliency's attribute method to get the gradients
+        d_gcs = super().attribute(inputs,
+                                 baselines,
+                                 target,
+                                 additional_forward_args,
+                                 average_grad_channels,
+                                 attribute_to_layer_input,
+                                 relu_attributions,
+                                 attr_dim_summation,
+                                 attr_interpolate)
+
+        # Modify the gradients as per your original D_INGRADS function
+        attributions = tuple(starmap(
+            lambda d_gc, _input: d_gc * self.guided_backprop.attribute.__wrapped__(
+                self.guided_backprop, inputs, target, additional_forward_args),
+            zip(d_gcs, formatted_inputs)))
+
+        return  _format_output(is_inputs_tuple, attributions)
+
 # Random
 
 # Residual
@@ -492,7 +686,7 @@ import torch.nn.functional as F
 device = ("cuda" if torch.cuda.is_available() else "cpu")
 
 # define path for real and fake dataset
-batch_size = 32
+batch_size = 8
 fold = 0
 split = "train"
 mode="ref"
@@ -535,7 +729,7 @@ for X_real, X_fake, y_real, y_fake in dataloader_real_fake:
     # with torch.no_grad():
     #     y_hat_real = F.softmax(VGG_model(X_real), dim=1).argmax(dim=1)
     #     y_hat_fake = F.softmax(VGG_model(X_fake), dim=1).argmax(dim=1)
-    saliency = Attribution(VGG_model, D_GradCam, X_real, X_fake, y_fake) # add method_kwargs, or attr_kwargs depending on the method.
+    saliency = Attribution(VGG_model, DeepLift, X_real, X_fake, y_fake) # add method_kwargs, or attr_kwargs depending on the method.
     break
 print(saliency)
 
@@ -588,3 +782,8 @@ print(saliency)
 #                               if isinstance(baseline, (int, float)) else baseline),
 #     zip(baselines, inputs)
 # ))
+
+"""
+Need to redefine relu every time so it work. so instead of self.relu, do nn.ReLU every time.
+
+"""
