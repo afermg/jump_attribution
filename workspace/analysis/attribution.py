@@ -2,6 +2,8 @@
 # coding: utf-8
 from itertools import starmap
 import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 import torch
 import torch.nn as nn
@@ -26,6 +28,7 @@ from captum.attr._utils.common import (
 )
 
 from captum._utils.typing import BaselineType, TargetType, TensorOrTupleOfTensorsGeneric
+from captum.attr import visualization as viz
 
 torch.manual_seed(42)
 np.random.seed(42)
@@ -49,9 +52,9 @@ def Attribution(model: nn.Module,
     else:
         return grad_func.attribute(inputs=inputs, baselines=baselines, target=inputs_target)
 
-# D_INGRADS (Input * Gradient)
+# D_InGrad (Input * Gradient)
 #
-class D_INGRADS(Saliency):
+class D_InGrad(Saliency):
     """
     -- Updated discriminatory method of the InputXGradient method --
     A baseline approach for computing the attribution. It multiplies input with
@@ -181,7 +184,7 @@ class D_INGRADS(Saliency):
         formatted_inputs, formatted_baselines = _format_input_baseline(inputs, baselines)
         # Call Saliency's attribute method to get the gradients
         saliency = super().attribute(inputs=inputs, target=target, additional_forward_args=additional_forward_args)
-        # Modify the gradients as per your original D_INGRADS function
+        # Modify the gradients as per your original D_InGrad function
         attributions = tuple(starmap(
             lambda ingrads, inputs, baselines: torch.abs(ingrads * (inputs - baselines)),
             zip(saliency, formatted_inputs, formatted_baselines)))
@@ -193,6 +196,9 @@ class D_INGRADS(Saliency):
 
 # D_DL (DeepLift)
 # Already implemented, call DeepLift
+
+# Careful: Need to redefine relu in your neural network every time so it work. So instead of defining self.relu = nn.ReLU once,
+# do nn.ReLU every time.
 
 # D_GC (GradCAM)
 
@@ -270,7 +276,7 @@ class D_GradCam(LayerGradCam):
                         that for all given input tensors, dimension 0 corresponds
                         to the number of examples, and if multiple input tensors
                         are provided, the examples must be aligned appropriately.
-        baselines (scalar, Tensor, tuple of scalar, or Tensor, optional):
+            baselines (scalar, Tensor, tuple of scalar, or Tensor, optional):
                         Baselines define the starting point from which integral
                         is computed and can be provided as:
 
@@ -509,7 +515,7 @@ class D_GuidedGradCam(D_GradCam):
                         that for all given input tensors, dimension 0 corresponds
                         to the number of examples, and if multiple input tensors
                         are provided, the examples must be aligned appropriately.
-        baselines (scalar, Tensor, tuple of scalar, or Tensor, optional):
+            baselines (scalar, Tensor, tuple of scalar, or Tensor, optional):
                         Baselines define the starting point from which integral
                         is computed and can be provided as:
 
@@ -623,18 +629,15 @@ class D_GuidedGradCam(D_GradCam):
             >>> # It is the last convolution layer, which is the recommended
             >>> # use case for GradCAM.
             >>> net = ImageClassifier()
-            >>> layer_gc = D_GradCam(net, net.conv4)
+            >>> layer_gc = D_GuidedGradCam(net, net.conv4)
             >>> input = torch.randn(2, 3, 32, 32, requires_grad=True)
             >>> # Computes layer GradCAM for class 3 relative to baseline.
             >>> # attribution size matches layer output except for dimension
             >>> # 1, so dimensions of attr would be Nx1x8x8.
             >>> attr = layer_gc.attribute(input, baseline,  3)
-            >>> # GradCAM attributions are often upsampled and viewed as a
-            >>> # mask to the input, since the convolutional layer output
-            >>> # spatially matches the original input image.
-            >>> # This can be done with LayerAttribution's interpolate method.
-            >>> # This is the default behavior but it can be cancelled.
-            >>> upsampled_attr = LayerAttribution.interpolate(attr, (32, 32))
+            >>> # Then GradCAM attributions are upsampled and multiplied with
+            >>> # gradient of the input.
+            >>> # The resulted attributions spatially matches the original input image.
 
         """
 
@@ -642,16 +645,16 @@ class D_GuidedGradCam(D_GradCam):
         formatted_inputs, formatted_baselines = _format_input_baseline(inputs, baselines)
         # Call Saliency's attribute method to get the gradients
         d_gcs = super().attribute(inputs,
-                                 baselines,
-                                 target,
-                                 additional_forward_args,
-                                 average_grad_channels,
-                                 attribute_to_layer_input,
-                                 relu_attributions,
-                                 attr_dim_summation,
-                                 attr_interpolate)
+                                  baselines,
+                                  target,
+                                  additional_forward_args,
+                                  average_grad_channels,
+                                  attribute_to_layer_input,
+                                  relu_attributions,
+                                  attr_dim_summation,
+                                  attr_interpolate)
 
-        # Modify the gradients as per your original D_INGRADS function
+        # Modify the gradients as per your original D_InGrad function
         attributions = tuple(starmap(
             lambda d_gc, _input: d_gc * self.guided_backprop.attribute.__wrapped__(
                 self.guided_backprop, inputs, target, additional_forward_args),
@@ -663,6 +666,100 @@ class D_GuidedGradCam(D_GradCam):
 
 # Residual
 
+# def visualize_attribution(attribution, X_real):
+#     attribution = np.transpose(attribution, (1, 2, 0))
+#     X_real = np.transpose(X_real, (1, 2, 0))
+
+#     fig, axis = viz.visualize_image_attr_multiple(
+#                     attribution,
+#                     X_real,
+#                     methods=["original_image", "heat_map"],
+#                     signs=["all", "absolute_value"],
+#                     show_colorbar=True,
+#                     titles=["Image", "Attribution"],
+#                     use_pyplot=True,
+#                 )
+#     return fig, axis
+
+# def visualize_color_attribution(attribution, original_image):
+#     attribution = np.transpose(attribution, (1, 2, 0))
+#     original_image = np.transpose(original_image, (1, 2, 0))
+
+#     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 5))
+#     ax1.imshow(original_image)
+#     ax1.set_title("Image")
+#     ax1.axis("off")
+#     ax2.imshow(np.abs(attribution) / np.max(np.abs(attribution)))
+#     ax2.set_title("Attribution")
+#     ax2.axis("off")
+#     return fig, (ax1, ax2)
+import numpy.typing as npt
+
+def _cumulative_sum_threshold(
+    values: npt.NDArray, percentile: Union[int, float]
+) -> float:
+    # given values should be non-negative
+    assert percentile >= 0 and percentile <= 100, (
+        "Percentile for thresholding must be " "between 0 and 100 inclusive."
+    )
+    sorted_vals = np.sort(values.flatten())
+    cum_sums = np.cumsum(sorted_vals)
+    threshold_id = np.where(cum_sums >= cum_sums[-1] * 0.01 * percentile)[0][0]
+    # pyre-fixme[7]: Expected `float` but got `ndarray[typing.Any, dtype[typing.Any]]`.
+    return sorted_vals[threshold_id]
+
+def _normalize_scale(attr: npt.NDArray, scale_factor: float) -> npt.NDArray:
+    assert scale_factor != 0, "Cannot normalize by scale factor = 0"
+    if abs(scale_factor) < 1e-5:
+        warnings.warn(
+            "Attempting to normalize by value approximately 0, visualized results"
+            "may be misleading. This likely means that attribution values are all"
+            "close to 0.",
+            stacklevel=2,
+        )
+    attr_norm = attr / scale_factor
+    return np.clip(attr_norm, -1, 1)
+
+def visualize_attribution(attributions, X_real, X_fake, y_real, y_fake, y_hat_real, y_hat_fake,  method_names=None, fig=None, axes=None):
+    # Ensure X_real and X_fake are in channel-last format for plotting
+    X_real = np.transpose(X_real, (1, 2, 0))
+    X_fake = np.transpose(X_fake, (1, 2, 0))
+
+    num_methods = len(attributions)  # Number of attribution methods
+    if fig is None or axes is None:
+        fig, axes = plt.subplots(1, num_methods + 2, figsize=(5 * (num_methods + 2), 5))
+
+    # Plot X_real once in the first column
+    axes[0].imshow(X_real)
+    axes[0].set_title(f"Original Image\nclass: {y_real} / pred: {y_hat_real}")
+    axes[0].axis("off")
+
+    # Plot X_fake once in the second column
+    axes[1].imshow(X_fake)
+    axes[1].set_title(f"Counterfactual Image\nclass: {y_fake} / pred: {y_hat_fake}")
+    axes[1].axis("off")
+
+    # Plot each attribution map in subsequent columns as a heatmap
+    for i, attribution in enumerate(attributions):
+        # Ensure attribution is in channel-last format
+        attribution = np.transpose(attribution, (1, 2, 0))
+        attribution = np.sum(attribution, axis=-1)
+        # Plot attribution map with heatmap from -1 to 1
+        threshold = _cumulative_sum_threshold(
+            np.abs(attribution), 100.0 - 2
+        )
+        attribution = _normalize_scale(attribution, threshold)
+        im = axes[i + 2].imshow(attribution, cmap="bwr_r", vmin=-1, vmax=1)
+        title = method_names[i] if method_names else f"Attribution {i+1}"
+        axes[i + 2].set_title(title)
+        axes[i + 2].axis("off")
+
+    # Add color bar for the attribution maps
+    cbar = fig.colorbar(im, ax=axes[-1], orientation='vertical', fraction=0.05, pad=0.05)
+    cbar.set_label("Attribution Score")
+
+    # plt.tight_layout()
+    return fig, axes
 """
 -----------------------------------------------------------
 """
@@ -681,6 +778,8 @@ from lightning_parallel_training import LightningModelV2
 
 from pathlib import Path
 import torch.nn.functional as F
+
+fig_directory = Path("/home/hhakem/projects/counterfactuals_projects/workspace/analysis/figures")
 
 # select device
 device = ("cuda" if torch.cuda.is_available() else "cpu")
@@ -723,67 +822,40 @@ VGG_module = LightningModelV2.load_from_checkpoint(Path("lightning_checkpoint_lo
 VGG_model = VGG_module.model.eval().to(device)
 
 # need to predict the label of the input and then do attribution technique
+attr_methods = [D_InGrad, IntegratedGradients, D_GradCam, D_GuidedGradCam, DeepLift]
+attr_names = ["D_InputXGrad", "IntegratedGradients", "D_GradCam", "D_GuidedGradcam", "DeepLift"]
+max_img = 20
+curr_img = 0
+fig, axis = plt.subplots(max_img, len(attr_methods) + 2, figsize=(5 * (len(attr_methods) + 2), 5 * max_img))
 for X_real, X_fake, y_real, y_fake in dataloader_real_fake:
     X_real, y_real, X_fake, y_fake = X_real.to(device), y_real.to(device), X_fake.to(device), y_fake.to(device)
     X_real.requires_grad, X_fake.requires_grad = True, True
-    # with torch.no_grad():
-    #     y_hat_real = F.softmax(VGG_model(X_real), dim=1).argmax(dim=1)
-    #     y_hat_fake = F.softmax(VGG_model(X_fake), dim=1).argmax(dim=1)
-    saliency = Attribution(VGG_model, DeepLift, X_real, X_fake, y_fake) # add method_kwargs, or attr_kwargs depending on the method.
-    break
-print(saliency)
+    with torch.no_grad():
+        y_hat_real = F.softmax(VGG_model(X_real), dim=1).argmax(dim=1)
+        y_hat_fake = F.softmax(VGG_model(X_fake), dim=1).argmax(dim=1)
+    attributions = []
+    for attr_method in attr_methods:
+        attributions.append(Attribution(VGG_model, attr_method, X_fake, X_real, y_fake).sum(dim=1, keepdim=True).detach().cpu().numpy()) # method_kwargs={"num_layer": -3})
+        # add method_kwargs, or attr_kwargs depending on the method.
+        torch.cuda.empty_cache()
 
-# layer_name, layer = next((name, module) for name, module in reversed(list(VGG_model.named_modules())) if isinstance(module, torch.nn.Conv2d))
+    attributions = np.stack(attributions, axis=1)
+    for i in range(X_real.shape[0]):
+        fig, _ = visualize_attribution(attributions[i],((1+X_real[i])/2).detach().cpu().numpy(), ((1+X_fake[i])/2).detach().cpu().numpy(),
+                                          y_real[i].detach().cpu().numpy(), y_fake[i].detach().cpu().numpy(),
+                                          y_hat_real[i].detach().cpu().numpy(), y_hat_fake[i].detach().cpu().numpy(),
+                                          attr_names,
+                                          fig, axis[curr_img, :])
+        curr_img += 1
+        if curr_img == max_img:
+            break
+    if curr_img == max_img:
+        break
+fig.savefig(fig_directory / "visualize_attribution_test")
 
-# from itertools import starmap
-# VGG_model.zero_grad()
-# grads, evals = map(lambda x: x[0], compute_layer_gradients_and_eval(VGG_model,
-#                                                                     layer,
-#                                                                     X_real,
-#                                                                     y_real
-#                                                                     ))
-# test_grad = LayerGradCam(VGG_model, layer).attribute(X_real, y_real , relu_attributions=False, attr_dim_summation=False)
+# D_InGrad
+# D_GradCam
+# D_GuidedGradCam
+# DeepLift
+# IntegratedGradients
 
-# layer_gradients, layer_evals = compute_layer_gradients_and_eval(VGG_model,
-#                                                                 layer,
-#                                                                 X_real,
-#                                                                 y_real
-#                                                                 )
-
-# summed_grads = tuple(
-#             (
-#                 torch.mean(
-#                     # pyre-fixme[6]: For 1st argument expected `Tensor` but got
-#                     #  `Tuple[Tensor, ...]`.
-#                     layer_grad,
-#                     # pyre-fixme[16]: `tuple` has no attribute `shape`.
-#                     dim=tuple(x for x in range(2, len(layer_grad.shape))),
-#                     keepdim=True,
-#                 )
-#                 if len(layer_grad.shape) > 2
-#                 else layer_grad
-#             )
-#             for layer_grad in layer_gradients
-#         )
-
-# layer_name, layer = next((name, module) for name, module in reversed(list(VGG_model.named_modules())) if isinstance(module, torch.nn.Conv2d))
-
-# layer_gradients, layer_evals = compute_layer_gradients_and_eval(
-#     VGG_model,
-#     layer,
-#     X_real,
-#     y_real)
-# layer_evals2 = LayerActivation(VGG_model, layer).attribute(X_real)
-
-# baselines = (0, )
-# inputs = (X_real, )
-# baselines = tuple(starmap(
-#     lambda baseline, _input: (torch.tensor(baseline, dtype=torch.float32, device=_input.device).expand(_input.size()[1:]).unsqueeze(0)
-#                               if isinstance(baseline, (int, float)) else baseline),
-#     zip(baselines, inputs)
-# ))
-
-"""
-Need to redefine relu every time so it work. so instead of self.relu, do nn.ReLU every time.
-
-"""
