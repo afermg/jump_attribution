@@ -2,12 +2,14 @@
 # coding: utf-8
 from itertools import starmap
 import numpy as np
+import numpy.typing as npt
 import matplotlib.pyplot as plt
-import seaborn as sns
+import cv2
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torchvision.transforms.functional as F_vis
 from torch import Tensor
 from torch.nn import Module
 
@@ -32,7 +34,11 @@ from captum.attr import visualization as viz
 
 torch.manual_seed(42)
 np.random.seed(42)
+from multiprocessing import Pool, cpu_count
 
+"""
+------- Attribution method ----------
+"""
 # General Attribution function
 def Attribution(model: nn.Module,
                 method: Callable,
@@ -90,8 +96,10 @@ class D_InGrad(Saliency):
                         be aligned appropriately.
 
             baselines (scalar, Tensor, tuple of scalar, or Tensor, optional):
-                            Baselines define the point from which we differentiate with inputs.
-                            and can be provided as:
+                        Baselines define reference samples that are compared with
+                        the inputs. In order to assign attribution scores, D_InGrads
+                        computes the differences between the inputs and
+                        corresponding references.
 
                             - a single tensor, if inputs is a single tensor, with
                               exactly the same dimensions as inputs or the first
@@ -277,8 +285,10 @@ class D_GradCam(LayerGradCam):
                         to the number of examples, and if multiple input tensors
                         are provided, the examples must be aligned appropriately.
             baselines (scalar, Tensor, tuple of scalar, or Tensor, optional):
-                        Baselines define the starting point from which integral
-                        is computed and can be provided as:
+                        Baselines define reference samples that are compared with
+                        the inputs. In order to assign attribution scores, D_GradCam
+                        computes the differences between the inputs/outputs and
+                        corresponding references.
 
                         - a single tensor, if inputs is a single tensor, with
                           exactly the same dimensions as inputs or the first
@@ -516,9 +526,10 @@ class D_GuidedGradCam(D_GradCam):
                         to the number of examples, and if multiple input tensors
                         are provided, the examples must be aligned appropriately.
             baselines (scalar, Tensor, tuple of scalar, or Tensor, optional):
-                        Baselines define the starting point from which integral
-                        is computed and can be provided as:
-
+                        Baselines define reference samples that are compared with
+                        the inputs. In order to assign attribution scores D_GuidedGradCam
+                        computes the differences between the inputs/outputs and
+                        corresponding references.
                         - a single tensor, if inputs is a single tensor, with
                           exactly the same dimensions as inputs or the first
                           dimension is one and the remaining dimensions match
@@ -664,37 +675,97 @@ class D_GuidedGradCam(D_GradCam):
 
 # Random
 
+class Random_attr():
+    """
+    Compute random attribution attribution map.
+    """
+    def __init__(self, *args):
+        pass
+    def attribute(self,
+                  inputs: Union[Tensor, Tuple[Tensor, ...]],
+                  *args,
+                  **kwargs):
+        """
+            inputs (Tensor or tuple[Tensor, ...]): Input for which the random attribution
+                   is computed.
+        """
+
+        is_inputs_tuple = _is_tuple(inputs)
+        formatted_inputs = _format_tensor_into_tuples(inputs)
+        # apply a gaussian blur with sigma = 4.0 and kernel which match definition of scipy:
+        # kernel_size = round(2 * radius + 1) where radius = truncated * sigma where truncated = 4.0 for default.
+        attributions = tuple(map(
+            lambda _input: F_vis.gaussian_blur(
+                torch.abs(torch.randn(*_input.shape)),
+                kernel_size=round(2 * round(4.0 * 4.0) + 1), sigma=4.0),
+           formatted_inputs))
+
+        attributions = tuple(map(
+            lambda attr: (attr - attr.min())/(attr.max() - attr.min()),
+            attributions))
+        return  _format_output(is_inputs_tuple, attributions)
+
 # Residual
 
-# def visualize_attribution(attribution, X_real):
-#     attribution = np.transpose(attribution, (1, 2, 0))
-#     X_real = np.transpose(X_real, (1, 2, 0))
+class Residual_attr():
+    """
+    Compute the difference between inputs and baselines and apply a MinMaxScaler
+    """
+    def __init__(self, *args):
+        pass
+    def attribute(self,
+                  inputs: Union[Tensor, Tuple[Tensor, ...]],
+                  baselines: BaselineType = None,
+                  *args,
+                  **kwargs):
+        """
+            inputs (Tensor or tuple[Tensor, ...]): Input for which attributions
+                        are computed.
+            baselines (scalar, Tensor, tuple of scalar, or Tensor, optional):
+                        Baselines define reference samples that are compared with
+                        the inputs. In order to assign attribution scores, Residual_attr
+                        computes the differences between the inputs and
+                        corresponding references.
 
-#     fig, axis = viz.visualize_image_attr_multiple(
-#                     attribution,
-#                     X_real,
-#                     methods=["original_image", "heat_map"],
-#                     signs=["all", "absolute_value"],
-#                     show_colorbar=True,
-#                     titles=["Image", "Attribution"],
-#                     use_pyplot=True,
-#                 )
-#     return fig, axis
+                        - a single tensor, if inputs is a single tensor, with
+                          exactly the same dimensions as inputs or the first
+                          dimension is one and the remaining dimensions match
+                          with inputs.
 
-# def visualize_color_attribution(attribution, original_image):
-#     attribution = np.transpose(attribution, (1, 2, 0))
-#     original_image = np.transpose(original_image, (1, 2, 0))
+                        - a single scalar, if inputs is a single tensor, which will
+                          be broadcasted for each input value in input tensor.
 
-#     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 5))
-#     ax1.imshow(original_image)
-#     ax1.set_title("Image")
-#     ax1.axis("off")
-#     ax2.imshow(np.abs(attribution) / np.max(np.abs(attribution)))
-#     ax2.set_title("Attribution")
-#     ax2.axis("off")
-#     return fig, (ax1, ax2)
-import numpy.typing as npt
+                        - a tuple of tensors or scalars, the baseline corresponding
+                          to each tensor in the inputs' tuple can be:
 
+                          - either a tensor with matching dimensions to
+                            corresponding tensor in the inputs' tuple
+                            or the first dimension is one and the remaining
+                            dimensions match with the corresponding
+                            input tensor.
+
+                          - or a scalar, corresponding to a tensor in the
+                            inputs' tuple. This scalar value is broadcasted
+                            for corresponding input tensor.
+
+                        In the cases when `baselines` is not provided, we internally
+                        use zero scalar corresponding to each input tensor.
+        """
+        is_inputs_tuple = _is_tuple(inputs)
+        formatted_inputs, formatted_baselines = _format_input_baseline(inputs, baselines)
+        attributions = tuple(starmap(
+            lambda _input, baseline: torch.abs(_input - baseline),
+            zip(formatted_inputs, formatted_baselines)))
+        attributions = tuple(map(
+            lambda attr: (attr - attr.min()) / (attr.max() - attr.min()),
+            attributions))
+        return  _format_output(is_inputs_tuple, attributions)
+
+
+"""
+------- Visualisation of attribution function ----------
+"""
+# Visualisation function
 def _cumulative_sum_threshold(
     values: npt.NDArray, percentile: Union[int, float]
 ) -> float:
@@ -720,7 +791,8 @@ def _normalize_scale(attr: npt.NDArray, scale_factor: float) -> npt.NDArray:
     attr_norm = attr / scale_factor
     return np.clip(attr_norm, -1, 1)
 
-def visualize_attribution(attributions, X_real, X_fake, y_real, y_fake, y_hat_real, y_hat_fake,  method_names=None, fig=None, axes=None):
+def visualize_attribution(attributions, X_real, X_fake, y_real, y_fake, y_hat_real, y_hat_fake,  method_names=None,
+                          fig=None, axes=None, percentile=98):
     # Ensure X_real and X_fake are in channel-last format for plotting
     X_real = np.transpose(X_real, (1, 2, 0))
     X_fake = np.transpose(X_fake, (1, 2, 0))
@@ -746,7 +818,7 @@ def visualize_attribution(attributions, X_real, X_fake, y_real, y_fake, y_hat_re
         attribution = np.sum(attribution, axis=-1)
         # Plot attribution map with heatmap from -1 to 1
         threshold = _cumulative_sum_threshold(
-            np.abs(attribution), 100.0 - 2
+            np.abs(attribution), percentile
         )
         attribution = _normalize_scale(attribution, threshold)
         im = axes[i + 2].imshow(attribution, cmap="bwr_r", vmin=-1, vmax=1)
@@ -760,8 +832,128 @@ def visualize_attribution(attributions, X_real, X_fake, y_real, y_fake, y_hat_re
 
     # plt.tight_layout()
     return fig, axes
+
+def plot_attr_img(model, dataloader_real_fake, fig_directory, name_fig, num_img=24,
+                  attr_methods=[D_InGrad, IntegratedGradients, DeepLift, D_GuidedGradCam, D_GradCam],
+                  attr_names=["D_InputXGrad", "IntegratedGradients", "DeepLift", "D_GuidedGradcam", "D_GradCam"],
+                  percentile=98):
+
+    curr_img = 0
+    fig, axis = plt.subplots(num_img, len(attr_methods) + 2, figsize=(5 * (len(attr_methods) + 2), 5 * num_img))
+    for X_real, X_fake, y_real, y_fake in dataloader_real_fake:
+        X_real, y_real, X_fake, y_fake = X_real.to(device), y_real.to(device), X_fake.to(device), y_fake.to(device)
+        X_real.requires_grad, X_fake.requires_grad = True, True
+        with torch.no_grad():
+            y_hat_real = F.softmax(model(X_real), dim=1).argmax(dim=1)
+            y_hat_fake = F.softmax(model(X_fake), dim=1).argmax(dim=1)
+        attributions = []
+        for attr_method in attr_methods:
+            attributions.append(Attribution(model, attr_method, X_fake, X_real, y_fake).sum(dim=1, keepdim=True).detach().cpu().numpy()) # method_kwargs={"num_layer": -3})
+            # add method_kwargs, or attr_kwargs depending on the method.
+            torch.cuda.empty_cache()
+
+        attributions = np.stack(attributions, axis=1)
+        for i in range(X_real.shape[0]):
+            fig, _ = visualize_attribution(attributions[i],((1+X_real[i])/2).detach().cpu().numpy(), ((1+X_fake[i])/2).detach().cpu().numpy(),
+                                              y_real[i].detach().cpu().numpy(), y_fake[i].detach().cpu().numpy(),
+                                              y_hat_real[i].detach().cpu().numpy(), y_hat_fake[i].detach().cpu().numpy(),
+                                              attr_names,
+                                              fig, axis[curr_img, :])
+            curr_img += 1
+            if curr_img == num_img:
+                break
+        if curr_img == num_img:
+            break
+    fig.savefig(fig_directory / name_fig)
+
 """
------------------------------------------------------------
+------- Mask creation and DAC score --------
+"""
+
+def slice_array(indices, steps=1000):
+    total_indices = len(indices)
+    # Calculate the proportional so that the tail gather more element that the head
+    proportions = np.array([100 if i < 8*steps/10 else 500 for i in range(1, steps + 1) ])
+    proportions = proportions / proportions.sum()
+
+    # Compute cumulative indices to use for slicing
+    cumulative_sizes = (proportions * total_indices).cumsum().astype(int)
+
+    # Fix rounding issues by adjusting the last index
+    cumulative_sizes[-1] = total_indices
+
+    # Use slicing based on cumulative indices
+    split_arrays = [indices[cumulative_sizes[i-1] if i > 0 else 0 : cumulative_sizes[i]] for i in range(steps)]
+    return split_arrays
+
+# def mask_size_growth2(attribution, struc=10, steps=1000):
+#     if len(attribution.shape) >2:
+#         if len(attribution.shape) > 3:
+#             raise Exception("This function only work with single attribution map.")
+#         else:
+#             attribution = attribution.sum(axis=0)
+#     attribution = attribution / np.abs(attribution).max()
+#     indices_sort = np.dstack(np.unravel_index(np.argsort(attribution.ravel()), (448, 448))).squeeze()[::-1]
+#     mask_sort = np.zeros((448, 448), dtype=np.uint8)
+#     sliced_indices = slice_indices(indices_sort, steps=steps)
+#     # sliced_indices = np.array_split(indices_sort, 1000)
+#     mask_size_tot = []
+#     for _slice in sliced_indices:
+#         mask_sort[tuple(_slice.T)] = 1
+#         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE,(struc,struc))
+#         mask_true = cv2.morphologyEx(mask_sort, cv2.MORPH_CLOSE, kernel)
+#         mask_size = np.sum(mask_true)
+#         mask_size_tot.append(mask_size)
+#     return mask_size_tot
+
+def get_mask(model, attribution, X_real, X_fake, y_real, y_fake, sigma=11, struc=10):
+    """
+    attribution should be normalized between -1 and 1
+    """
+    if len(attribution.shape) >2:
+        if len(attribution.shape) > 3:
+            raise Exception("This function only work with single attribution map.")
+        else:
+            attribution = attribution.sum(axis=0)
+    attribution = attribution / np.abs(attribution).max()
+    indices_sort = np.dstack(np.unravel_index(np.argsort(attribution.ravel()), (448, 448))).squeeze()[::-1]
+    sliced_indices = slice_array(indices_sort, steps=steps)
+    mask_sort = np.zeros((448, 448), dtype=np.uint8)
+    for _slice in sliced_indices:
+        mask_sort[tuple(_slice.T)] = 1
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE,(struc,struc))
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+        mask_size = np.sum(mask)
+        mask_weight = cv2.GaussianBlur(mask.astype(np.float), (sigma,sigma),0)
+
+        X_real_weight = mask_weight * X_real
+        X_fake_weight = mask_weight * X_fake
+        X_diff_rf = X_real_weight - X_fake_weight
+        X_hybrid = X_fake + X_diff_rf
+
+        X_fake_norm = normalize_image(copy.deepcopy(X_fake))
+        out_fake = run_inference(model, X_fake_norm)
+
+        X_real_norm = normalize_image(copy.deepcopy(X_real))
+        out_real = run_inference(model, X_real_norm)
+
+        im_copied_norm = normalize_image(copy.deepcopy(copyto))
+        out_copyto = run_inference(model, im_copied_norm)
+
+        imgs = [attribution, X_real_norm, X_fake_norm, im_copied_norm, normalize_image(copied_canvas),
+                normalize_image(copied_canvas_to), normalize_image(diff_copied), mask_weight]
+
+        imgs_all.append(imgs)
+
+        mrf_score = out_copyto[0][y_real] - out_fake[0][real_class]
+        result_dict[thr] = [float(mrf_score.detach().cpu().numpy()), mask_size]
+
+    return result_dict, img_names, imgs_all
+
+
+
+"""
+------- Test of above code  ----------
 """
 
 
@@ -806,7 +998,7 @@ id_channel = np.array([map_channel[ch] for ch in channel])
 # create dataset_real_fake
 dataset_real_fake = custom_dataset.ImageDataset_real_fake(imgs_real_path, imgs_fake_path,
                                                           channel=id_channel,
-                                                          org_to_trg_label=None,
+                                                          org_to_trg_label=None, #[(0, 1), (0, 2), (0, 3)],
                                                           img_transform=v2.Compose([v2.Lambda(lambda img:
                                                                                                torch.tensor(img, dtype=torch.float32)),
                                                                                     v2.Normalize(mean=len(channel)*[0.5],
@@ -821,41 +1013,62 @@ VGG_module = LightningModelV2.load_from_checkpoint(Path("lightning_checkpoint_lo
                                                    model=conv_model.VGG_ch)
 VGG_model = VGG_module.model.eval().to(device)
 
-# need to predict the label of the input and then do attribution technique
-attr_methods = [D_InGrad, IntegratedGradients, D_GradCam, D_GuidedGradCam, DeepLift]
-attr_names = ["D_InputXGrad", "IntegratedGradients", "D_GradCam", "D_GuidedGradcam", "DeepLift"]
-max_img = 20
+# visualize attribution map of multiple images when compared to their counterfactuals.
+
+attr_methods = [D_InGrad, IntegratedGradients, DeepLift, D_GuidedGradCam, D_GradCam, Residual_attr, Random_attr]
+attr_names = ["D_InputXGrad", "IntegratedGradients", "DeepLift", "D_GuidedGradcam", "D_GradCam", "Residual", "Random"]
+# plot_attr_img(VGG_model, dataloader_real_fake, fig_directory, name_fiVg="visualize_attribution", num_img=32,
+#               attr_methods=attr_methods, attr_names=attr_names,
+#               percentile=98)
+
+
+
+num_img = 1000
 curr_img = 0
-fig, axis = plt.subplots(max_img, len(attr_methods) + 2, figsize=(5 * (len(attr_methods) + 2), 5 * max_img))
+attr_tot = None
 for X_real, X_fake, y_real, y_fake in dataloader_real_fake:
     X_real, y_real, X_fake, y_fake = X_real.to(device), y_real.to(device), X_fake.to(device), y_fake.to(device)
     X_real.requires_grad, X_fake.requires_grad = True, True
-    with torch.no_grad():
-        y_hat_real = F.softmax(VGG_model(X_real), dim=1).argmax(dim=1)
-        y_hat_fake = F.softmax(VGG_model(X_fake), dim=1).argmax(dim=1)
-    attributions = []
-    for attr_method in attr_methods:
-        attributions.append(Attribution(VGG_model, attr_method, X_fake, X_real, y_fake).sum(dim=1, keepdim=True).detach().cpu().numpy()) # method_kwargs={"num_layer": -3})
-        # add method_kwargs, or attr_kwargs depending on the method.
-        torch.cuda.empty_cache()
-
-    attributions = np.stack(attributions, axis=1)
-    for i in range(X_real.shape[0]):
-        fig, _ = visualize_attribution(attributions[i],((1+X_real[i])/2).detach().cpu().numpy(), ((1+X_fake[i])/2).detach().cpu().numpy(),
-                                          y_real[i].detach().cpu().numpy(), y_fake[i].detach().cpu().numpy(),
-                                          y_hat_real[i].detach().cpu().numpy(), y_hat_fake[i].detach().cpu().numpy(),
-                                          attr_names,
-                                          fig, axis[curr_img, :])
-        curr_img += 1
-        if curr_img == max_img:
-            break
-    if curr_img == max_img:
+    # with torch.no_grad():
+    #     y_hat_real = F.softmax(model(X_real), dim=1).argmax(dim=1)
+    #     y_hat_fake = F.softmax(model(X_fake), dim=1).argmax(dim=1)
+    attr_batch = Attribution(VGG_model, DeepLift , X_fake, X_real, y_fake).sum(dim=1, keepdim=True).detach().cpu().numpy() # method_kwargs={"num_layer": -3})
+    # add method_kwargs, or attr_kwargs depending on the method.
+    torch.cuda.empty_cache()
+    if attr_tot is None:
+        attr_tot = attr_batch
+    else:
+        attr_tot = np.vstack([attr_tot, attr_batch])
+    if len(attr_tot) >= num_img:
         break
-fig.savefig(fig_directory / "visualize_attribution_test")
 
-# D_InGrad
-# D_GradCam
-# D_GuidedGradCam
-# DeepLift
-# IntegratedGradients
 
+
+
+
+# import time
+# import seaborn as sns
+
+# start_time = time.perf_counter()
+# with Pool(26) as pool: # with Pool(cpu_count()) as pool:
+#     processed_batch2 = pool.map(mask_size_growth2, attr_tot)
+#     processed_batch2 = np.array(processed_batch2)
+# end_time = time.perf_counter()
+# print(f"Total execution time: {end_time - start_time} seconds")
+
+
+# import pandas as pd
+# fig, ax = plt.subplots(figsize=(10, 6))
+# df = pd.DataFrame(data=processed_batch2).melt(ignore_index=False)
+# df.index.name="sample"
+# sns.lineplot(data=df, x="variable", y="value", ax=ax)# , estimator='mean', errorbar=None)
+# ax.set_title('Mask Size Against Steps')
+# ax.set_xlabel('Steps')
+# ax.set_ylabel('Mask Size')
+# ax.set_xticks(np.linspace(0, 0.2, num=11))  # Optional: Set x-ticks from -1 to 1
+# ax.grid(True)  # Optional: Add grid lines for better readability
+# plt.savefig(fig_directory / 'mask_size_results2.png', dpi=300, bbox_inches='tight')
+
+
+sigma = 11
+cv2.GaussianBlur(np.random.randint(0, 2, size=(10,10)).astype(np.uint8), (sigma,sigma),0)
