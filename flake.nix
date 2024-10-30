@@ -58,6 +58,7 @@
                       python_with_pkgs
                       python311Packages.venvShellHook
                       uv
+                      python311Packages.ruff-lsp
                     ]
                     ++ libList; 
                     venvDir = "./.venv";

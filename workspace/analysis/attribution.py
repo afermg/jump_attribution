@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 # coding: utf-8
+from functools import partial
 from itertools import starmap
 import numpy as np
 import numpy.typing as npt
@@ -833,6 +834,59 @@ def visualize_attribution(attributions, X_real, X_fake, y_real, y_fake, y_hat_re
     # plt.tight_layout()
     return fig, axes
 
+def visualize_attribution_mask(attributions, mask_weight, mask_size,
+                               X_real, X_fake, y_real, y_fake, y_hat_real, y_hat_fake,
+                               method_names=None,
+                               fig=None, axes=None, percentile=98):
+    # Ensure X_real and X_fake are in channel-last format for plotting
+    X_real = np.transpose(X_real, (1, 2, 0))
+    X_fake = np.transpose(X_fake, (1, 2, 0))
+
+    num_methods = len(attributions)  # Number of attribution methods
+    num_mask = mask_size.shape[-1]
+    if fig is None or axes is None:
+        fig, axes = plt.subplots(num_mask + 1, num_methods + 2, figsize=(5 * (num_methods + 2), 5))
+
+    # Plot X_real once in the first column
+    axes[0][0].imshow(X_real)
+    axes[0][0].set_title(f"Original Image\nclass: {y_real} / pred: {y_hat_real}")
+    axes[0][0].axis("off")
+
+    # Plot X_fake once in the second column
+    axes[0][1].imshow(X_fake)
+    axes[0][1].set_title(f"Counterfactual Image\nclass: {y_fake} / pred: {y_hat_fake}")
+    axes[0][1].axis("off")
+
+    # Plot each attribution map in subsequent columns as a heatmap
+    for i, attribution in enumerate(attributions):
+        # Ensure attribution is in channel-last format
+        attribution = np.transpose(attribution, (1, 2, 0))
+        attribution = np.sum(attribution, axis=-1)
+        # Plot attribution map with heatmap from -1 to 1
+        threshold = _cumulative_sum_threshold(
+            np.abs(attribution), percentile
+        )
+        attribution = _normalize_scale(attribution, threshold)
+        im = axes[0][i + 2].imshow(attribution, cmap="bwr_r", vmin=-1, vmax=1)
+        title = method_names[i] if method_names else f"Attribution {i+1}"
+        axes[0][i + 2].set_title(title)
+        axes[0][i + 2].axis("off")
+        for j in range(num_mask):
+            axes[j+1][0].axis("off")
+            axes[j+1][1].axis("off")
+            axes[j+1][i + 2].imshow(mask_weight[i][j], cmap="viridis", vmin=0, vmax=1)
+            title = f"mask_size: {mask_size[i][j]}"
+            axes[j+1][i + 2].set_title(title)
+            axes[j+1][i + 2].axis("off")
+
+    # Add color bar for the attribution maps
+    cbar = fig.colorbar(im, ax=axes[0,-1], orientation='vertical', fraction=0.05, pad=0.05)
+    cbar.set_label("Attribution Score")
+
+    # plt.tight_layout()
+    return fig, axes
+
+
 def plot_attr_img(model, dataloader_real_fake, fig_directory, name_fig, num_img=24,
                   attr_methods=[D_InGrad, IntegratedGradients, DeepLift, D_GuidedGradCam, D_GradCam],
                   attr_names=["D_InputXGrad", "IntegratedGradients", "DeepLift", "D_GuidedGradcam", "D_GradCam"],
@@ -872,7 +926,7 @@ def plot_attr_img(model, dataloader_real_fake, fig_directory, name_fig, num_img=
 
 def slice_array(indices, steps=1000):
     total_indices = len(indices)
-    # Calculate the proportional so that the tail gather more element that the head
+    # Calculate the proportion so that the tail gather more element that the head
     proportions = np.array([100 if i < 8*steps/10 else 500 for i in range(1, steps + 1) ])
     proportions = proportions / proportions.sum()
 
@@ -886,27 +940,7 @@ def slice_array(indices, steps=1000):
     split_arrays = [indices[cumulative_sizes[i-1] if i > 0 else 0 : cumulative_sizes[i]] for i in range(steps)]
     return split_arrays
 
-# def mask_size_growth2(attribution, struc=10, steps=1000):
-#     if len(attribution.shape) >2:
-#         if len(attribution.shape) > 3:
-#             raise Exception("This function only work with single attribution map.")
-#         else:
-#             attribution = attribution.sum(axis=0)
-#     attribution = attribution / np.abs(attribution).max()
-#     indices_sort = np.dstack(np.unravel_index(np.argsort(attribution.ravel()), (448, 448))).squeeze()[::-1]
-#     mask_sort = np.zeros((448, 448), dtype=np.uint8)
-#     sliced_indices = slice_indices(indices_sort, steps=steps)
-#     # sliced_indices = np.array_split(indices_sort, 1000)
-#     mask_size_tot = []
-#     for _slice in sliced_indices:
-#         mask_sort[tuple(_slice.T)] = 1
-#         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE,(struc,struc))
-#         mask_true = cv2.morphologyEx(mask_sort, cv2.MORPH_CLOSE, kernel)
-#         mask_size = np.sum(mask_true)
-#         mask_size_tot.append(mask_size)
-#     return mask_size_tot
-
-def get_mask(model, attribution, X_real, X_fake, y_real, y_fake, sigma=11, struc=10):
+def get_mask(attribution, steps=1000, sigma=11, struc=10):
     """
     attribution should be normalized between -1 and 1
     """
@@ -919,37 +953,14 @@ def get_mask(model, attribution, X_real, X_fake, y_real, y_fake, sigma=11, struc
     indices_sort = np.dstack(np.unravel_index(np.argsort(attribution.ravel()), (448, 448))).squeeze()[::-1]
     sliced_indices = slice_array(indices_sort, steps=steps)
     mask_sort = np.zeros((448, 448), dtype=np.uint8)
+    mask_size_tot, mask_weight_tot = [], []
     for _slice in sliced_indices:
         mask_sort[tuple(_slice.T)] = 1
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE,(struc,struc))
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-        mask_size = np.sum(mask)
-        mask_weight = cv2.GaussianBlur(mask.astype(np.float), (sigma,sigma),0)
-
-        X_real_weight = mask_weight * X_real
-        X_fake_weight = mask_weight * X_fake
-        X_diff_rf = X_real_weight - X_fake_weight
-        X_hybrid = X_fake + X_diff_rf
-
-        X_fake_norm = normalize_image(copy.deepcopy(X_fake))
-        out_fake = run_inference(model, X_fake_norm)
-
-        X_real_norm = normalize_image(copy.deepcopy(X_real))
-        out_real = run_inference(model, X_real_norm)
-
-        im_copied_norm = normalize_image(copy.deepcopy(copyto))
-        out_copyto = run_inference(model, im_copied_norm)
-
-        imgs = [attribution, X_real_norm, X_fake_norm, im_copied_norm, normalize_image(copied_canvas),
-                normalize_image(copied_canvas_to), normalize_image(diff_copied), mask_weight]
-
-        imgs_all.append(imgs)
-
-        mrf_score = out_copyto[0][y_real] - out_fake[0][real_class]
-        result_dict[thr] = [float(mrf_score.detach().cpu().numpy()), mask_size]
-
-    return result_dict, img_names, imgs_all
-
+        mask = cv2.morphologyEx(mask_sort, cv2.MORPH_CLOSE, kernel)
+        mask_size_tot.append(np.sum(mask))
+        mask_weight_tot.append(cv2.GaussianBlur(mask.astype(float), (sigma,sigma),0))
+    return np.stack(mask_weight_tot), np.stack(mask_size_tot)
 
 
 """
@@ -1022,27 +1033,71 @@ attr_names = ["D_InputXGrad", "IntegratedGradients", "DeepLift", "D_GuidedGradca
 #               percentile=98)
 
 
-
-num_img = 1000
+name_fig = "visualize_attribution_mask"
+num_img = 8
 curr_img = 0
 attr_tot = None
+attr_methods = [D_InGrad, IntegratedGradients]#,  DeepLift, D_GuidedGradCam, D_GradCam],
+attr_names = ["D_InputXGrad", "IntegratedGradients"]#, "DeepLift", "D_GuidedGradcam", "D_GradCam"],
+selected_mask = [0, 50, 100]
+num_y_ax_per_img = (len(selected_mask)+1)
+model = VGG_model
+fig, axis = plt.subplots(num_img * num_y_ax_per_img, len(attr_methods) + 2, figsize=(5 * (len(attr_methods) + 2), 5 * num_img * (len(selected_mask)+1)))
 for X_real, X_fake, y_real, y_fake in dataloader_real_fake:
     X_real, y_real, X_fake, y_fake = X_real.to(device), y_real.to(device), X_fake.to(device), y_fake.to(device)
     X_real.requires_grad, X_fake.requires_grad = True, True
-    # with torch.no_grad():
-    #     y_hat_real = F.softmax(model(X_real), dim=1).argmax(dim=1)
-    #     y_hat_fake = F.softmax(model(X_fake), dim=1).argmax(dim=1)
-    attr_batch = Attribution(VGG_model, DeepLift , X_fake, X_real, y_fake).sum(dim=1, keepdim=True).detach().cpu().numpy() # method_kwargs={"num_layer": -3})
-    # add method_kwargs, or attr_kwargs depending on the method.
-    torch.cuda.empty_cache()
-    if attr_tot is None:
-        attr_tot = attr_batch
-    else:
-        attr_tot = np.vstack([attr_tot, attr_batch])
-    if len(attr_tot) >= num_img:
+    with torch.no_grad():
+        y_hat_real = F.softmax(model(X_real), dim=1).argmax(dim=1)
+        y_hat_fake = F.softmax(model(X_fake), dim=1).argmax(dim=1)
+    attributions = []
+    mask_weight_selected = []
+    mask_size_selected = []
+    for attr_method in attr_methods:
+        # add method_kwargs, or attr_kwargs depending on the method, # method_kwargs={"num_layer": -3})
+        attributions.append(Attribution(model, attr_method, X_fake, X_real, y_fake).sum(dim=1, keepdim=True).detach().cpu().numpy())
+        torch.cuda.empty_cache()
+        with Pool(min(batch_size, cpu_count())) as pool: # with Pool(cpu_count()) as pool:
+            mask_batch = pool.map(partial(get_mask, steps=200), attributions[-1])
+            mask_weight, mask_size = map(lambda l: np.array(l), list(zip(*mask_batch)))
+            mask_weight_selected.append(mask_weight[:,selected_mask])
+            mask_size_selected.append(mask_size[:,selected_mask])
+
+    attributions = np.stack(attributions, axis=1)
+    mask_weight_selected = np.stack(mask_weight_selected, axis=1)
+    mask_size_selected = np.stack(mask_size_selected, axis=1)
+    if len(mask_weight_selected.shape) < 3:
+        mask_weight_selected = mask_weight_selected[:, :, np.newaxis, :, :]
+        mask_size_selected = mask_size_selected[:, :, np.newaxis]
+    for i in range(X_real.shape[0]):
+        fig, _ = visualize_attribution_mask(attributions[i], mask_weight_selected[i], mask_size_selected[i],
+                                            ((1+X_real[i])/2).detach().cpu().numpy(), ((1+X_fake[i])/2).detach().cpu().numpy(),
+                                            y_real[i].detach().cpu().numpy(), y_fake[i].detach().cpu().numpy(),
+                                            y_hat_real[i].detach().cpu().numpy(), y_hat_fake[i].detach().cpu().numpy(),
+                                            attr_names,
+                                            fig,
+                                            axis[num_y_ax_per_img * curr_img: num_y_ax_per_img * curr_img + num_y_ax_per_img,:])
+        curr_img += 1
+        if curr_img == num_img:
+            break
+    if curr_img == num_img:
         break
+fig.savefig(fig_directory / name_fig)
 
 
+
+
+
+    # mask_weight, mask_size = get_mask(attr_batch[0], steps=200)
+    # if attr_tot is None:
+    #     attr_tot = attr_batch
+    # else:
+    #     attr_tot = np.vstack([attr_tot, attr_batch])
+    # if len(attr_tot) >= num_img:
+    #     break
+        # X_real_weight = mask_weight * X_real
+        # X_fake_weight = mask_weight * X_fake
+        # X_diff_rf = X_real_weight - X_fake_weight
+        # X_hybrid = X_fake + X_diff_rf
 
 
 
@@ -1050,9 +1105,6 @@ for X_real, X_fake, y_real, y_fake in dataloader_real_fake:
 # import seaborn as sns
 
 # start_time = time.perf_counter()
-# with Pool(26) as pool: # with Pool(cpu_count()) as pool:
-#     processed_batch2 = pool.map(mask_size_growth2, attr_tot)
-#     processed_batch2 = np.array(processed_batch2)
 # end_time = time.perf_counter()
 # print(f"Total execution time: {end_time - start_time} seconds")
 
@@ -1070,5 +1122,6 @@ for X_real, X_fake, y_real, y_fake in dataloader_real_fake:
 # plt.savefig(fig_directory / 'mask_size_results2.png', dpi=300, bbox_inches='tight')
 
 
-sigma = 11
-cv2.GaussianBlur(np.random.randint(0, 2, size=(10,10)).astype(np.uint8), (sigma,sigma),0)
+# sigma = 11
+# mask = np.random.randint(0, 2, size=(10,10))
+# cv2.GaussianBlur(mask.astype(float), (sigma,sigma),0)
