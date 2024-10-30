@@ -138,7 +138,7 @@ class ImageDataset_real_fake(Dataset):
             mask = np.sum([(self.imgs_zarr_fake["labels"].oindex[:] == label) &
                            (self.imgs_zarr_fake["labels_org"].oindex[:] == label_org)
                            for (label_org, label) in self.org_to_trg_label], axis=0)
-            self.indices_tot = np.arange(self.imgs_zarr_fake["labels"].shape[0])[mask]
+            self.indices_tot = np.arange(self.imgs_zarr_fake["labels"].shape[0])[mask.astype(bool)]
         else:
             self.indices_tot = np.arange(self.imgs_zarr_fake["labels"].shape[0])
 
