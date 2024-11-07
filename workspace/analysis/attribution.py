@@ -2,43 +2,48 @@
 # coding: utf-8
 from functools import partial
 from itertools import starmap
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+
+import cv2
+import matplotlib.pyplot as plt
 import numpy as np
 import numpy.typing as npt
-import matplotlib.pyplot as plt
-import cv2
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torchvision.transforms.functional as F_vis
-from torch import Tensor
-from torch.nn import Module
-
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
-
-from captum.attr import Saliency, IntegratedGradients, DeepLift, GuidedBackprop, LayerGradCam, LayerActivation
-from captum._utils.gradient import compute_layer_gradients_and_eval
 from captum._utils.common import (
     _format_additional_forward_args,
     _format_output,
     _format_tensor_into_tuples,
     _is_tuple,
 )
+from captum._utils.gradient import compute_layer_gradients_and_eval
+from captum._utils.typing import BaselineType, TargetType, TensorOrTupleOfTensorsGeneric
+from captum.attr import (
+    DeepLift,
+    GuidedBackprop,
+    IntegratedGradients,
+    LayerActivation,
+    LayerGradCam,
+    Saliency,
+)
+from captum.attr import visualization as viz
 from captum.attr._utils.common import (
     _format_input_baseline,
     _reshape_and_sum,
     _validate_input,
 )
-
-from captum._utils.typing import BaselineType, TargetType, TensorOrTupleOfTensorsGeneric
-from captum.attr import visualization as viz
+from torch import Tensor
+from torch.nn import Module
 
 torch.manual_seed(42)
 np.random.seed(42)
-from multiprocessing import Pool, cpu_count
 import warnings
-import seaborn as sns
+from multiprocessing import Pool, cpu_count
+
 import pandas as pd
+import seaborn as sns
 from tqdm import tqdm
 
 """
@@ -766,8 +771,10 @@ class Residual_attr():
             attributions))
         return  _format_output(is_inputs_tuple, attributions)
 
-import torch
 from typing import Union
+
+import torch
+
 
 @torch.no_grad
 def normalize_attribution(attribution: torch.Tensor, percentile: Union[int, float]=98) -> torch.Tensor:
@@ -1010,19 +1017,17 @@ def get_mask(attribution, steps=1000, sigma=11, struc=10):
 """
 
 
-import zarr
+from pathlib import Path
 
-from data_split import StratifiedGroupKFold_custom
-from sklearn.model_selection import StratifiedShuffleSplit
-
-from torchvision.transforms import v2
-from torch.utils.data import DataLoader, BatchSampler
 import conv_model
 import custom_dataset
-from lightning_parallel_training import LightningModelV2
-
-from pathlib import Path
 import torch.nn.functional as F
+import zarr
+from data_split import StratifiedGroupKFold_custom
+from lightning_parallel_training import LightningModelV2
+from sklearn.model_selection import StratifiedShuffleSplit
+from torch.utils.data import BatchSampler, DataLoader
+from torchvision.transforms import v2
 
 fig_directory = Path("/home/hhakem/projects/counterfactuals_projects/workspace/analysis/figures")
 
@@ -1095,12 +1100,31 @@ kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE,(size_closing, size_closing
 mask_size_tot = {attr_name: [] for attr_name in attr_names}
 dac_tot = {attr_name: [] for attr_name in attr_names}
 count = 0
+
+def update_mat_count(y_real, y_fake, size):
+    indices = y_real * size + y_fake
+    counts = torch.bincount(indices, minlength=size * size)
+    return counts.view(size, size)
+
 for X_real, X_fake, y_real, y_fake in tqdm(dataloader_real_fake, leave=True, desc="batch"):
     X_real, y_real, X_fake, y_fake = X_real.to(device), y_real.to(device), X_fake.to(device), y_fake.to(device)
     with torch.no_grad():
         y_hat_real_log = F.softmax(model(X_real), dim=1)#.argmax(dim=1)
         y_hat_fake_log = F.softmax(model(X_fake), dim=1)#.argmax(dim=1)
-    pred_true_mask = ((y_real == y_hat_real_log.argmax(dim=1)) & (y_fake == y_hat_fake_log.argmax(dim=1)))
+        pred_true_mask = (y_real == y_hat_real_log.argmax(dim=1)) & (y_fake == y_hat_fake_log.argmax(dim=1))
+    try:
+        mat_count += update_mat_count(y_real, y_real, mat_count.size(0))
+        mat_count += update_mat_count(y_real, y_fake, mat_count.size(0))
+        mat_acc += update_mat_count(y_real[pred_true_mask], y_real[pred_true_mask], mat_acc.size(0))
+        mat_acc += update_mat_count(y_real[pred_true_mask], y_fake[pred_true_mask], mat_acc.size(0))
+    except:
+        mat_count = torch.zeros((y_hat_real_log.shape[1], y_hat_real_log.shape[1]), device=device)
+        mat_acc = torch.zeros((y_hat_real_log.shape[1], y_hat_real_log.shape[1]), device=device)
+        mat_count += update_mat_count(y_real, y_real, mat_count.size(0))
+        mat_count += update_mat_count(y_real, y_fake, mat_count.size(0))
+        mat_acc += update_mat_count(y_real[pred_true_mask], y_real[pred_true_mask], mat_acc.size(0))
+        mat_acc += update_mat_count(y_real[pred_true_mask], y_fake[pred_true_mask], mat_acc.size(0))
+
     if pred_true_mask.sum() > 0:
         X_real = X_real[pred_true_mask]
         X_fake = X_fake[pred_true_mask]
@@ -1135,10 +1159,15 @@ for X_real, X_fake, y_real, y_fake in tqdm(dataloader_real_fake, leave=True, des
         # interpolate to make plotting easier.
         mask_size_tot[attr_name].append(np.column_stack(mask_size_batch))
         dac_tot[attr_name].append(np.column_stack(dac_batch))
-    if count == 30:
+    if count == 0:
         break
     else:
         count += 1
+
+mat_count, mat_acc = mat_count.cpu().numpy(), mat_acc.cpu().numpy()
+tot_acc = mat_acc.sum() / mat_count.sum()
+mat_acc /= mat_count
+
 
 
 mask_size_tot = {key: np.vstack(value) for key, value in mask_size_tot.items()}
@@ -1165,7 +1194,7 @@ mask_dac_interp_df["mask_size_interp"] = mask_dac_interp_df.groupby(["attr_metho
 # mask_dac_df = pd.merge(mask_dac_df, agg_df, on=["mask_size_bin", "attr_method"], how="left")
 
 
-fig, axis = plt.subplots(1, 2, figsize=(10, 6))
+fig, axis = plt.subplots(1, 3, figsize=(15,6))
 axis = axis.flatten()
 # df_dac = pd.DataFrame(data=np.vstack(dac_tot)).melt(ignore_index=False)
 # df.index.name="sample"
@@ -1174,65 +1203,17 @@ sns.lineplot(data=mask_dac_interp_df, x="steps", y="mask_size", hue="attr_method
 axis[0].set_title('Mask Size Against Steps')
 axis[0].set_xlabel('Steps')
 axis[0].set_ylabel('Mask Size')
-#axis[0].set_xticks(np.linspace(0, 0.2, num=11))  # Optional: Set x-ticks from -1 to 1
 axis[0].grid(True)
 
 sns.lineplot(data=mask_dac_interp_df, x="mask_size_interp", y="dac_interp", hue="attr_method", ax=axis[1])#, estimator='mean', errorbar=None)
 axis[1].set_title('Mask Size Against DAC')
 axis[1].set_xlabel('mask_size')
 axis[1].set_ylabel('dac')
-#axis[1].set_xticks(np.linspace(0, 0.2, num=11))  # Optional: Set x-ticks from -1 to 1
 axis[1].grid(True)
+
+sns.heatmap(mat_acc, ax=axis[2], annot=True, fmt=".2f", xticklabels=range(mat_acc.shape[0]), yticklabels=range(mat_acc.shape[0]), vmin=0, vmax=1)
+axis[2].set_title(f'Pred accuracy per class and transition - tot_acc: {tot_acc}')
+axis[2].set_xlabel('y_real')
+axis[2].set_ylabel('y_fake')
+
 plt.savefig(fig_directory / 'mask_size_dac.png', dpi=300, bbox_inches='tight')
-
-
-
-# np.dstack(np.unravel_index(np.argpartition(attr_batch[0].ravel(), -steps)[-steps:], (448, 448))).squeeze()[::-1]
-
-    #     with Pool(min(batch_size, cpu_count())) as pool: # with Pool(cpu_count()) as pool:
-    #         mask_batch = pool.map(partial(get_mask, steps=steps), attributions[-1])
-    #         mask_weight_batch, mask_size_batch = map(lambda l: np.array(l), list(zip(*mask_batch)))
-    #         mask_weights.append(mask_weight_batch)
-    #         mask_sizes.append(mask_size_batch)
-
-    # attributions = np.stack(attributions, axis=1)
-    # mask_weights = np.stack(mask_weights, axis=1)
-    # mask_sizes = np.stack(mask_sizes, axis=1)
-    # if len(mask_sizes) < 3:
-    #     mask_weights = mask_weights[:, :, np.newaxis, :, :]
-    #     mask_sizes = mask_sizes[:, :, np.newaxis]
-
-    # break
-
-
-    # mask_weight, mask_size = get_mask(attr_batch[0], steps=200)
-    # if attr_tot is None:
-    #     attr_tot = attr_batch
-    # else:
-    #     attr_tot = np.vstack([attr_tot, attr_batch])
-    # if len(attr_tot) >= num_img:
-    #     break
-        # X_real_weight = mask_weight * X_real
-        # X_fake_weight = mask_weight * X_fake
-        # X_diff_rf = X_real_weight - X_fake_weight
-        # X_hybrid = X_fake + X_diff_rf
-
-
-
-# import time
-
-# start_time = time.perf_counter()
-# end_time = time.perf_counter()
-# print(f"Total execution time: {end_time - start_time} seconds")
-
-
-
-
-# sigma = 11
-# mask = np.random.randint(0, 2, size=(10,10))
-# cv2.GaussianBlur(mask.astype(float), (sigma,sigma),0)
-
-# attr_batch = torch.tensor(attr_batch).to(device)
-# attr_batch_numpy = attr_batch.cpu().numpy()
-# import timeit
-
