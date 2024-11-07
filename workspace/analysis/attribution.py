@@ -1213,6 +1213,7 @@ axis[1].grid(True)
 
 sns.heatmap(mat_acc, ax=axis[2], annot=True, fmt=".2f", xticklabels=range(mat_acc.shape[0]), yticklabels=range(mat_acc.shape[0]), vmin=0, vmax=1)
 axis[2].set_title(f'Pred accuracy per class and transition - tot_acc: {tot_acc}')
+axis[2].set_title(f'Acuracy when real and fake well predicted\ntot_acc: {tot_acc:.3f}')
 axis[2].set_xlabel('y_real')
 axis[2].set_ylabel('y_fake')
 
