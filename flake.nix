@@ -58,7 +58,7 @@
                       python_with_pkgs
                       python311Packages.venvShellHook
                       uv
-                      python311Packages.ruff-lsp
+                      # python311Packages.ruff-lsp
                     ]
                     ++ libList; 
                     venvDir = "./.venv";
@@ -72,6 +72,7 @@
                         export LD_LIBRARY_PATH=$NIX_LD_LIBRARY_PATH:$LD_LIBRARY_PATH
                         export PYTHON_KEYRING_BACKEND=keyring.backends.fail.Keyring
                         runHook venvShellHook
+                        ln -sf ${ruff}/bin/ruff .venv/bin/ruff
                         uv pip sync requirements.txt
                         export PYTHONPATH=${python_with_pkgs}/${python_with_pkgs.sitePackages}:$PYTHONPATH
                     '';
