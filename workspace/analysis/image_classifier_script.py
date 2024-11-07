@@ -10,9 +10,10 @@ import zarr
 import numcodecs
 import numpy as np
 import matplotlib.pyplot as plt
-import matplotlib.patches as patches
+import matplotlib.patches as mpatches
 import seaborn as sns
 
+import itertools
 from itertools import groupby, starmap, product
 from more_itertools import unzip
 
@@ -859,8 +860,77 @@ def compute_fid_lpips(fake_img_path_preffix,  dataset_fold, mode="ref",
 
     return fid_dict, lpips_dict
 
+
+def plot_score(fid_dict, lpips_dict, preffix_name="score", mode="ref",
+               fold=0, split="train", use_ema=True, cmap="tab10"):
+
+    fid_df = pl.DataFrame(fid_dict).melt(value_name="fid").with_columns([
+            pl.col("variable").str.extract(r"from_(\d+)_to_(\d+)", 1).cast(pl.Int64).alias("y_org"),
+            pl.col("variable").str.extract(r"from_(\d+)_to_(\d+)", 2).cast(pl.Int64).alias("y_trg"),
+        ]).select(pl.col(["y_org", "y_trg", "fid"]))
+
+    lpips_df = pl.DataFrame(lpips_dict).melt(value_name="lpips").with_columns([
+            pl.col("variable").str.extract(r"from_(\d+)_to_(\d+)", 1).cast(pl.Int64).alias("y_org"),
+            pl.col("variable").str.extract(r"from_(\d+)_to_(\d+)", 2).cast(pl.Int64).alias("y_trg")
+        ]).select(pl.col(["y_org", "y_trg", "lpips"]))
+
+    score_df = fid_df.join(lpips_df,
+                           on=["y_org", "y_trg"],
+                           how="inner")
+
+
+    fig, axis = plt.subplots(1, 2, figsize=(10, 6))
+    axis = axis.flatten()
+    palette = plt.get_cmap(cmap)
+    y_trgs = np.sort(score_df.select(pl.col("y_trg")).unique().to_numpy().squeeze())
+    bar_width = 1 / (len(y_trgs) + 1)
+    for y_trg in y_trgs:
+        group_data = score_df.filter(pl.col("y_trg") == y_trg).select(pl.col("y_org", "fid", "lpips")).sort(by="y_org")
+        y_orgs = np.sort(group_data.select(pl.col("y_org")).to_numpy().squeeze())
+        positions = np.linspace(y_trg - bar_width * (len(group_data) // 2), y_trg + bar_width * (len(group_data) // 2), len(group_data))
+        rects = axis[0].bar(
+            positions,
+            group_data.select(pl.col("fid")).to_numpy().squeeze(),
+            width=bar_width,
+            color=palette(y_orgs),
+            align='center'
+        )
+        axis[0].bar_label(rects, padding=3, fmt="%0.1f", font={'weight': 'bold', 'size': "x-small"})
+
+        rects = axis[1].bar(
+            positions,
+            group_data.select(pl.col("lpips")).to_numpy().squeeze(),
+            width=bar_width,
+            color=palette(y_orgs),
+            align='center',
+            log=True
+        )
+        axis[1].bar_label(rects, padding=3, fmt=lambda val: f"{np.log10(val):.2f}", font={'weight': 'bold', 'size': "x-small"})
+        # ax.bar_label(rects, padding=3)
+
+    # Customizing x-axis
+    y_orgs = np.sort(score_df.select(pl.col("y_org")).unique().to_numpy().squeeze())
+    axis[0].set_xticks(y_trgs)
+    axis[0].legend(handles=list(map(lambda y_org: mpatches.Patch(color=palette(y_org), label=y_org), y_orgs)), title="y_org")
+    axis[0].set_xticklabels(y_trgs)
+    axis[0].set_xlabel('y_trg')
+    axis[0].set_ylabel('FID')
+    axis[0].set_title("distribution distance between generated and real image\nlower the better", font={"size":"small"})
+
+    axis[1].set_xticks(y_trgs)
+    axis[1].legend(handles=list(map(lambda y_org: mpatches.Patch(color=palette(y_org), label=y_org), y_orgs)), title="y_org")
+    axis[1].set_xticklabels(y_trgs)
+    axis[1].set_xlabel('y_trg')
+    axis[1].set_ylabel('LPIPS - (log scale)')
+    axis[1].set_title("dissimilarity between generated image from same class\n higher the better", font={"size":"small"})
+
+    fig.suptitle(f'Score for generation {"with" if use_ema else "without"} ema split {split} fold {fold} mode {mode}')
+    plt.savefig(fig_directory / f'{preffix_name}_{"ema" if use_ema else ""}_{fold}_{split}_{mode}.png', dpi=300, bbox_inches='tight')
+
 # Because there is a large number of cpu available and that we are working with a relatively small number of samples, it leads to significant overhead
 # when computing linalg.sqrtm within the fid metric. So need to turn down the number of thread to reduce this overhead.
-os.environ["OMP_NUM_THREADS"] = "1"
-fid_dict, lpips_dict = compute_fid_lpips(fake_img_path_preffix,  dataset_fold, mode=mode, fold=fold,
-                                         split=split, use_ema=use_ema, batch_size=512)
+# os.environ["OMP_NUM_THREADS"] = "1"
+# fid_dict, lpips_dict = compute_fid_lpips(fake_img_path_preffix,  dataset_fold, mode=mode, fold=fold,
+#                                          split=split, use_ema=use_ema, batch_size=512)
+
+plot_score(fid_dict, lpips_dict, preffix_name="score", mode=mode, fold=fold, split=split, use_ema=use_ema, cmap="tab10")
