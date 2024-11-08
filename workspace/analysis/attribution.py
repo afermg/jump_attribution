@@ -69,6 +69,21 @@ def Attribution(model: nn.Module,
     else:
         return grad_func.attribute(inputs=inputs, baselines=baselines, target=inputs_target)
 
+def build_kwargs_dict(attr_names: List[str],
+                      kwargs_dict: Optional[Dict[Dict[str, Any], Any]] = None):
+    """
+    Build kwargs_dict for Attribution function.
+    attr_names (list of string): attr_names is intended as a list of name associated to the attribution method:
+    kwargs_dict (optional dict of dict): An example of correct method_kwargs_dict could be {"D_GradCam": {"num_layer": -3}}
+    """
+    if kwargs_dict is None:
+        return {attr_name: None for attr_name in attr_names}
+    else:
+        attr_names_missing = set(attr_names) - set(kwargs_dict.keys())
+        kwargs_dict.update({attr_name: None for attr_name in attr_names_missing})
+        return kwargs_dict
+
+
 # D_InGrad (Input * Gradient)
 #
 class D_InGrad(Saliency):
@@ -881,7 +896,13 @@ def visualize_attribution_mask(attributions, mask_weight, mask_size,
 def plot_attr_img(model, dataloader_real_fake, fig_directory, name_fig, num_img=24,
                   attr_methods=[D_InGrad, IntegratedGradients, DeepLift, D_GuidedGradCam, D_GradCam],
                   attr_names=["D_InputXGrad", "IntegratedGradients", "DeepLift", "D_GuidedGradcam", "D_GradCam"],
-                  percentile=98):
+                  percentile=98,
+                  method_kwargs_dict=None,
+                  attr_kwargs_dict=None):
+
+    method_kwargs_dict = build_kwargs_dict(attr_names=attr_names, kwargs_dict=method_kwargs_dict)
+    attr_kwargs_dict = build_kwargs_dict(attr_names=attr_names, kwargs_dict=attr_kwargs_dict)
+
     device = ("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
     curr_img = 0
@@ -893,9 +914,12 @@ def plot_attr_img(model, dataloader_real_fake, fig_directory, name_fig, num_img=
             y_hat_real = F.softmax(model(X_real), dim=1).argmax(dim=1)
             y_hat_fake = F.softmax(model(X_fake), dim=1).argmax(dim=1)
         attributions = []
-        for attr_method in attr_methods:
+        for attr_name, attr_method in zip(attr_names, attr_methods):
             # add method_kwargs, or attr_kwargs depending on the method, # method_kwargs={"num_layer": -3})
-            attr_batch = Attribution(model, attr_method, X_fake, X_real, y_fake)
+            attr_batch = Attribution(model, attr_method, X_fake, X_real, y_fake,
+                                     method_kwargs=method_kwargs_dict[attr_name],
+                                     attr_kwargs=attr_kwargs_dict[attr_name])
+
             attr_batch = normalize_attribution(attr_batch, percentile=percentile).detach().cpu().numpy()
             attributions.append(attr_batch)
             torch.cuda.empty_cache()
@@ -918,7 +942,13 @@ def plot_attr_mask_img(model, dataloader_real_fake, fig_directory, name_fig, num
                        steps=200, selected_mask=[0, 50, 100],
                        attr_methods=[D_InGrad, IntegratedGradients, DeepLift, D_GuidedGradCam, D_GradCam],
                        attr_names=["D_InputXGrad", "IntegratedGradients", "DeepLift", "D_GuidedGradcam", "D_GradCam"],
-                       percentile=98):
+                       percentile=98,
+                       method_kwargs_dict=None,
+                       attr_kwargs_dict=None):
+
+    method_kwargs_dict = build_kwargs_dict(attr_names=attr_names, kwargs_dict=method_kwargs_dict)
+    attr_kwargs_dict = build_kwargs_dict(attr_names=attr_names, kwargs_dict=attr_kwargs_dict)
+
     device = ("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
     curr_img = 0
@@ -934,9 +964,12 @@ def plot_attr_mask_img(model, dataloader_real_fake, fig_directory, name_fig, num
         attributions = []
         mask_weight_selected = []
         mask_size_selected = []
-        for attr_method in attr_methods:
+        for attr_name, attr_method in zip(attr_names, attr_methods):
             # add method_kwargs, or attr_kwargs depending on the method, # method_kwargs={"num_layer": -3})
-            attr_batch = Attribution(model, attr_method, X_fake, X_real, y_fake)
+            attr_batch = Attribution(model, attr_method, X_fake, X_real, y_fake,
+                                     method_kwargs=method_kwargs_dict[attr_name],
+                                     attr_kwargs=attr_kwargs_dict[attr_name])
+
             attr_batch = normalize_attribution(attr_batch, percentile=percentile).detach().cpu().numpy()
             attributions.append(attr_batch)
             torch.cuda.empty_cache()
@@ -950,8 +983,8 @@ def plot_attr_mask_img(model, dataloader_real_fake, fig_directory, name_fig, num
         mask_weight_selected = np.stack(mask_weight_selected, axis=1)
         mask_size_selected = np.stack(mask_size_selected, axis=1)
         if len(mask_size_selected.shape) < 3:
-            mask_weight_selected = mask_weight_selected[:, :, np.newaxis, :, :]
-            mask_size_selected = mask_size_selected[:, :, np.newaxis]
+            mask_weight_selected = mask_weight_selected[:, :, None]
+            mask_size_selected = mask_size_selected[:, :, None]
         for i in range(X_real.shape[0]):
             fig, _ = visualize_attribution_mask(attributions[i], mask_weight_selected[i], mask_size_selected[i],
                                                 ((1+X_real[i])/2).detach().cpu().numpy(), ((1+X_fake[i])/2).detach().cpu().numpy(),
@@ -970,6 +1003,7 @@ def plot_attr_mask_img(model, dataloader_real_fake, fig_directory, name_fig, num
 """
 ------- Mask creation and DAC score --------
 """
+
 
 def slice_array(indices, steps=1000):
     total_indices = len(indices)
@@ -1009,7 +1043,154 @@ def get_mask(attribution, steps=1000, sigma=11, struc=10):
         mask_weight_tot.append(cv2.GaussianBlur(mask.astype(float), (sigma,sigma),0))
     return np.stack(mask_weight_tot), np.stack(mask_size_tot)
 
+def dac_curve_computation(model, dataloader_real_fake,
+                          attr_methods=[D_InGrad, IntegratedGradients, DeepLift, D_GuidedGradCam, D_GradCam],
+                          attr_names=["D_InputXGrad", "IntegratedGradients", "DeepLift", "D_GuidedGradcam", "D_GradCam"],
+                          batch_size_mask=512,
+                          steps=200, shift=0.7, head_tail=(1, 5),
+                          percentile=98,
+                          size_closing=10,
+                          size_gaussblur=11,
+                          early_stop: Optional[int]=None,
+                          method_kwargs_dict=None,
+                          attr_kwargs_dict=None):
 
+    def update_mat_count(indices_0: Tensor,
+                         indices_1: Tensor,
+                         size: int) -> Tensor:
+        """
+        Count the occurrence of pair of (indices_0_i, indices_1_j) at the position i,j
+        of a Tensor with size size.
+
+        Args:
+            indices_0 (Tensor): 1-d int tensor
+            indices_1 (Tensor): 1-d int tensor
+            size (int): the size of the output matrix
+
+        Return:
+            counts (Tensor): count the occurrence of pair of (indices_0_i, indices_1_j) at the position i,j
+        """
+        indices = indices_0 * size + indices_1
+        counts = torch.bincount(indices, minlength=size * size)
+        return counts.view(size, size)
+
+    def process_mask(mask_binary: np.ndarray,
+                     kernel: np.ndarray,
+                     size_gaussblur: int) -> Tuple[np.ndarray, ...]:
+        """
+        Return the closing of the binary mask according to the given kernel and the blurred closed mask returned by a gaussianblur filter.
+
+        Args:
+            mask_binary (np.ndarray): the binary mask, must be type np.uint8 else raise an exception
+            kernel (np.ndarray): the kernel for closing operation
+            size_gaussblur (int): the size of the kernel for the gaussian blur
+
+        Return:
+            mask_binary_closed (np.ndarray): the closed binary mask
+            mask_weight (np.ndarray): the blurred closed binary mask
+        """
+
+        if mask_binary.dtype != np.uint8:
+            raise Exception(f"morphology closing can only happen with np.uint8 type of mask. Instead mask_binary.dtype is: {mask_binary.dtype}")
+
+        mask_binary_closed = cv2.morphologyEx(mask_binary, op=cv2.MORPH_CLOSE, kernel=kernel)
+        mask_weight = cv2.GaussianBlur(mask_binary_closed.astype(np.float32), ksize=(size_gaussblur, size_gaussblur), sigmaX=0)
+        return mask_binary_closed, mask_weight
+
+    device = ("cuda" if torch.cuda.is_available() else "cpu")
+    model = model.to(device)
+    proportions = np.array([head_tail[0] if i < shift*steps else head_tail[1] for i in range(steps)])
+    tot_pixels = dataloader_real_fake.dataset[0][0].shape[-2:].numel()
+    splitting_point = ((proportions * tot_pixels)/proportions.sum()).cumsum().astype(int)
+    splitting_point[-1] = tot_pixels - 1
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE,(size_closing, size_closing))
+    mask_size_tot = {attr_name: [] for attr_name in attr_names}
+    dac_tot = {attr_name: [] for attr_name in attr_names}
+
+    method_kwargs_dict = build_kwargs_dict(attr_names=attr_names, kwargs_dict=method_kwargs_dict)
+    attr_kwargs_dict = build_kwargs_dict(attr_names=attr_names, kwargs_dict=attr_kwargs_dict)
+
+    if early_stop is not None:
+        count = 0
+
+    for X_real, X_fake, y_real, y_fake in tqdm(dataloader_real_fake, leave=True, desc="batch"):
+        X_real, y_real, X_fake, y_fake = X_real.to(device), y_real.to(device), X_fake.to(device), y_fake.to(device)
+        with torch.no_grad():
+            y_hat_real_log = F.softmax(model(X_real), dim=1)#.argmax(dim=1)
+            y_hat_fake_log = F.softmax(model(X_fake), dim=1)#.argmax(dim=1)
+            pred_true_mask = (y_real == y_hat_real_log.argmax(dim=1)) & (y_fake == y_hat_fake_log.argmax(dim=1))
+
+        # compute accuracy of the classification so that diagonale element are pred of real images and the rest if correct transition
+        # in such a matrix,  mat_acc[0][1] is the count of correct transition from y_real = 0 to y_fake=1
+        try:
+            mat_count += update_mat_count(y_real, y_real, mat_count.size(0))
+            mat_count += update_mat_count(y_real, y_fake, mat_count.size(0))
+            mat_acc += update_mat_count(y_real[pred_true_mask], y_real[pred_true_mask], mat_acc.size(0))
+            mat_acc += update_mat_count(y_real[pred_true_mask], y_fake[pred_true_mask], mat_acc.size(0))
+        except:
+            mat_count = torch.zeros((y_hat_real_log.shape[1], y_hat_real_log.shape[1]), device=device)
+            mat_acc = torch.zeros((y_hat_real_log.shape[1], y_hat_real_log.shape[1]), device=device)
+            mat_count += update_mat_count(y_real, y_real, mat_count.size(0))
+            mat_count += update_mat_count(y_real, y_fake, mat_count.size(0))
+            mat_acc += update_mat_count(y_real[pred_true_mask], y_real[pred_true_mask], mat_acc.size(0))
+            mat_acc += update_mat_count(y_real[pred_true_mask], y_fake[pred_true_mask], mat_acc.size(0))
+
+        if pred_true_mask.sum() > 0:
+            X_real = X_real[pred_true_mask]
+            X_fake = X_fake[pred_true_mask]
+            y_real = y_real[pred_true_mask]
+            y_fake = y_fake[pred_true_mask]
+        else:
+            continue
+
+        X_real.requires_grad, X_fake.requires_grad = True, True
+        for attr_name, attr_method in zip(attr_names, attr_methods):
+            # add method_kwargs, or attr_kwargs depending on the method, # method_kwargs={"num_layer": -3})
+            attr_batch = Attribution(model, attr_method, X_fake, X_real, y_fake,
+                                     method_kwargs=method_kwargs_dict[attr_name],
+                                     attr_kwargs=attr_kwargs_dict[attr_name])
+            attr_batch = normalize_attribution(attr_batch, percentile=percentile)
+            attr_sorted_index = torch.dstack(torch.unravel_index(torch.argsort(attr_batch.view(attr_batch.size(0), -1), dim=1, descending=True),
+                                                                 tuple(X_real.shape[-2:])))
+            attr_sorted_index = attr_sorted_index[:, splitting_point]
+            mask_binary_all = torch.ge(attr_batch.unsqueeze(1),
+                                       attr_batch[np.arange(5)[:, None],
+                                                  attr_sorted_index[...,0],
+                                                  attr_sorted_index[...,1]].unsqueeze(-1).unsqueeze(-1)).cpu().numpy().astype(np.uint8)
+            # free up memory
+            del attr_batch, attr_sorted_index
+            torch.cuda.empty_cache()
+
+            func_process_mask = partial(process_mask, kernel=kernel, size_gaussblur=size_gaussblur)
+            mask_binary_all = mask_binary_all.reshape(-1, *mask_binary_all.shape[-2:])
+            with ThreadPool(cpu_count()) as pool:
+                result = pool.map(func_process_mask, mask_binary_all)
+            mask_binary_closed_all, mask_weight_all = tuple(map(lambda x: np.array(x).reshape(X_real.shape[0], -1, *X_real.shape[-2:]), zip(*result)))
+
+            dac_batch = []
+            mask_weight_all_split = np.array_split(mask_weight_all,
+                                                   np.arange(0, mask_weight_all.shape[1], batch_size_mask // mask_weight_all.shape[0]),
+                                                   axis=1)[1:]
+            with torch.no_grad():
+                X_real, X_fake = X_real.unsqueeze(1), X_fake.unsqueeze(1)
+                for mask_weight in mask_weight_all_split:
+                    mask_weight = torch.tensor(mask_weight).to(device).unsqueeze(-3)
+                    X_hybrid = ((1 - mask_weight) * X_fake + mask_weight * X_real).view(-1, *X_real.shape[-3:])
+
+                    y_hat_hybrid_log = F.softmax(model(X_hybrid), dim=1).view(*mask_weight.shape[:2], -1)
+                    dac_batch.append((y_hat_hybrid_log[np.arange(len(y_real)), :, y_real] - y_hat_fake_log[np.arange(len(y_real)), y_real].unsqueeze(1)).cpu().numpy())
+                # free up memory
+                del mask_weight, X_hybrid, y_hat_hybrid_log
+                torch.cuda.empty_cache()
+
+            mask_size_tot[attr_name].append(mask_binary_closed_all.sum(axis=(2,3)))
+            dac_tot[attr_name].append(np.column_stack(dac_batch))
+        if early_stop is not None:
+            count += 1
+            if count == early_stop:
+                break
+    mat_count, mat_acc = mat_count.cpu().numpy(), mat_acc.cpu().numpy()
+    return mask_size_tot, dac_tot, mat_count, mat_acc
 """
 ------- Test of above code  ----------
 """
@@ -1036,7 +1217,7 @@ device = ("cuda" if torch.cuda.is_available() else "cpu")
 batch_size = 8
 fold = 0
 split = "train"
-mode="ref"
+mode = "ref"
 use_ema = True
 fake_img_path_preffix = "image_active_dataset/fake_imgs"
 
@@ -1073,126 +1254,34 @@ VGG_model = VGG_module.model.eval().to(device)
 
 attr_methods = [D_InGrad, IntegratedGradients, DeepLift, D_GuidedGradCam, D_GradCam, Residual_attr, Random_attr]
 attr_names = ["D_InputXGrad", "IntegratedGradients", "DeepLift", "D_GuidedGradcam", "D_GradCam", "Residual", "Random"]
+
 # plot_attr_img(VGG_model, dataloader_real_fake, fig_directory, name_fig="visualize_attribution", num_img=32,
 #               attr_methods=attr_methods, attr_names=attr_names,
 #               percentile=98)
+
+
 # plot_attr_mask_img(VGG_model, dataloader_real_fake, fig_directory, name_fig="visualize_attribution_mask",
 #                    num_img=24, steps=200, selected_mask=[0, 50, 100],
 #                    attr_methods=attr_methods, attr_names=attr_names,
 #                    percentile=98)
 
 
-
-
 attr_methods = [D_InGrad, IntegratedGradients, DeepLift, D_GuidedGradCam, D_GradCam, Residual_attr, Random_attr][:1]
 attr_names = ["D_InputXGrad", "IntegratedGradients", "DeepLift", "D_GuidedGradcam", "D_GradCam", "Residual", "Random"][:1]
-percentile = 98
-model = VGG_model
-device = ("cuda" if torch.cuda.is_available() else "cpu")
-model = model.to(device)
-steps = 200
-shift = 0.7
-head_tail = (100, 500)
-size_closing = 10
-size_gaussblur = 11
-proportions = np.array([head_tail[0] if i < shift*steps else head_tail[1] for i in range(steps)])
-tot_pixels = dataloader_real_fake.dataset[0][0].shape[-2:].numel()
-splitting_point = ((proportions * tot_pixels)/proportions.sum()).cumsum().astype(int)
-splitting_point[-1] = tot_pixels - 1
-kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE,(size_closing, size_closing))
-mask_size_tot = {attr_name: [] for attr_name in attr_names}
-dac_tot = {attr_name: [] for attr_name in attr_names}
-count = 0
-batch_size_mask = 552
+mask_size_tot, dac_tot, mat_count, mat_acc = dac_curve_computation(VGG_model, dataloader_real_fake,
+                                                                   attr_methods=attr_methods,
+                                                                   attr_names=attr_names,
+                                                                   batch_size_mask=512,
+                                                                   steps=200, shift=0.7, head_tail=(1, 5),
+                                                                   percentile=98,
+                                                                   size_closing=10,
+                                                                   size_gaussblur=11,
+                                                                   early_stop=1, #None,
+                                                                   method_kwargs_dict=None, #{"D_GradCam": {"num_layer": -3}}
+                                                                   attr_kwargs_dict=None)
 
-def update_mat_count(y_real, y_fake, size):
-    indices = y_real * size + y_fake
-    counts = torch.bincount(indices, minlength=size * size)
-    return counts.view(size, size)
-
-def process_mask(mask_binary, kernel, size_gaussblur):
-    mask_binary_closed = cv2.morphologyEx(mask_binary, op=cv2.MORPH_CLOSE, kernel=kernel)
-    mask_weight = cv2.GaussianBlur(mask_binary_closed.astype(np.float32), ksize=(size_gaussblur, size_gaussblur), sigmaX=0)
-    return mask_binary_closed, mask_weight
-
-for X_real, X_fake, y_real, y_fake in tqdm(dataloader_real_fake, leave=True, desc="batch"):
-    X_real, y_real, X_fake, y_fake = X_real.to(device), y_real.to(device), X_fake.to(device), y_fake.to(device)
-    with torch.no_grad():
-        y_hat_real_log = F.softmax(model(X_real), dim=1)#.argmax(dim=1)
-        y_hat_fake_log = F.softmax(model(X_fake), dim=1)#.argmax(dim=1)
-        pred_true_mask = (y_real == y_hat_real_log.argmax(dim=1)) & (y_fake == y_hat_fake_log.argmax(dim=1))
-    try:
-        mat_count += update_mat_count(y_real, y_real, mat_count.size(0))
-        mat_count += update_mat_count(y_real, y_fake, mat_count.size(0))
-        mat_acc += update_mat_count(y_real[pred_true_mask], y_real[pred_true_mask], mat_acc.size(0))
-        mat_acc += update_mat_count(y_real[pred_true_mask], y_fake[pred_true_mask], mat_acc.size(0))
-    except:
-        mat_count = torch.zeros((y_hat_real_log.shape[1], y_hat_real_log.shape[1]), device=device)
-        mat_acc = torch.zeros((y_hat_real_log.shape[1], y_hat_real_log.shape[1]), device=device)
-        mat_count += update_mat_count(y_real, y_real, mat_count.size(0))
-        mat_count += update_mat_count(y_real, y_fake, mat_count.size(0))
-        mat_acc += update_mat_count(y_real[pred_true_mask], y_real[pred_true_mask], mat_acc.size(0))
-        mat_acc += update_mat_count(y_real[pred_true_mask], y_fake[pred_true_mask], mat_acc.size(0))
-
-    if pred_true_mask.sum() > 0:
-        X_real = X_real[pred_true_mask]
-        X_fake = X_fake[pred_true_mask]
-        y_real = y_real[pred_true_mask]
-        y_fake = y_fake[pred_true_mask]
-    else:
-        continue
-    X_real.requires_grad, X_fake.requires_grad = True, True
-    for attr_name, attr_method in zip(attr_names, attr_methods):
-        # add method_kwargs, or attr_kwargs depending on the method, # method_kwargs={"num_layer": -3})
-        attr_batch = Attribution(model, attr_method, X_fake, X_real, y_fake, method_kwargs=None, attr_kwargs=None)
-        attr_batch = normalize_attribution(attr_batch, percentile=percentile)
-        attr_sorted_index = torch.dstack(torch.unravel_index(torch.argsort(attr_batch.view(attr_batch.size(0), -1), dim=1, descending=True),
-                                                             tuple(X_real.shape[-2:])))
-        attr_sorted_index = attr_sorted_index[:, splitting_point]
-        mask_binary_all = torch.ge(attr_batch.unsqueeze(1),
-                                   attr_batch[np.arange(5)[:, None],
-                                              attr_sorted_index[...,0],
-                                              attr_sorted_index[...,1]].unsqueeze(-1).unsqueeze(-1)).cpu().numpy().astype(np.uint8)
-        # free up memory
-        del attr_batch, attr_sorted_index
-        torch.cuda.empty_cache()
-
-        func_process_mask = partial(process_mask, kernel=kernel, size_gaussblur=size_gaussblur)
-        mask_binary_all = mask_binary_all.reshape(-1, *mask_binary_all.shape[-2:])
-        with ThreadPool(cpu_count()) as pool:
-            result = pool.map(func_process_mask, mask_binary_all)
-        mask_binary_closed_all, mask_weight_all = tuple(map(lambda x: np.array(x).reshape(X_real.shape[0], -1, *X_real.shape[-2:]), zip(*result)))
-
-        dac_batch = []
-        mask_weight_all_split = np.array_split(mask_weight_all,
-                                               np.arange(0, mask_weight_all.shape[1], batch_size_mask // mask_weight_all.shape[0]),
-                                               axis=1)[1:]
-        with torch.no_grad():
-            X_real, X_fake = X_real.unsqueeze(1), X_fake.unsqueeze(1)
-            for mask_weight in mask_weight_all_split:
-                mask_weight = torch.tensor(mask_weight).to(device).unsqueeze(-3)
-                X_hybrid = ((1 - mask_weight) * X_fake + mask_weight * X_real).view(-1, *X_real.shape[-3:])
-
-                y_hat_hybrid_log = F.softmax(model(X_hybrid), dim=1).view(*mask_weight.shape[:2], -1)
-                dac_batch.append((y_hat_hybrid_log[np.arange(len(y_real)), :, y_real] - y_hat_fake_log[np.arange(len(y_real)), y_real].unsqueeze(1)).cpu().numpy())
-            # free up memory
-            del mask_weight, X_hybrid, y_hat_hybrid_log
-            torch.cuda.empty_cache()
-
-        mask_size_tot[attr_name].append(mask_binary_closed_all.sum(axis=(2,3)))
-        dac_tot[attr_name].append(np.column_stack(dac_batch))
-
-        break
-    break
-#     if count == 0:
-#         break
-#     else:
-#         count += 1
-
-# mat_count, mat_acc = mat_count.cpu().numpy(), mat_acc.cpu().numpy()
-# tot_acc = mat_acc.sum() / mat_count.sum()
-# mat_acc /= mat_count
-
+tot_acc = mat_acc.sum() / mat_count.sum()
+mat_acc_norm = mat_acc / mat_count
 
 
 # mask_size_tot = {key: np.vstack(value) for key, value in mask_size_tot.items()}
