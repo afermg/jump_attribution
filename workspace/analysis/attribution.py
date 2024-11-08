@@ -2,9 +2,11 @@
 # coding: utf-8
 from functools import partial
 from itertools import starmap
+
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 import time
 
+import warnings
 import cv2
 import matplotlib.pyplot as plt
 import numpy as np
@@ -32,16 +34,14 @@ from captum.attr import (
 from captum.attr import visualization as viz
 from captum.attr._utils.common import (
     _format_input_baseline,
-    _reshape_and_sum,
-    _validate_input,
 )
 from torch import Tensor
 from torch.nn import Module
 
 torch.manual_seed(42)
 np.random.seed(42)
-import warnings
 from multiprocessing import Pool, cpu_count
+from multiprocessing.pool import ThreadPool
 
 import pandas as pd
 import seaborn as sns
@@ -772,9 +772,6 @@ class Residual_attr():
             attributions))
         return  _format_output(is_inputs_tuple, attributions)
 
-from typing import Union
-
-import torch
 
 
 @torch.no_grad
@@ -1113,21 +1110,6 @@ def update_mat_count(y_real, y_fake, size):
     counts = torch.bincount(indices, minlength=size * size)
     return counts.view(size, size)
 
-def set_positions_to_one(mask_index_chunk, mask_binary):
-    """
-    Sets the specified positions in the matrix to 1 using native NumPy indexing.
-
-    Parameters:
-    - matrix (numpy.ndarray): A 2D array of zeros.
-    - indices (list of tuples): List of (row, col) positions to set to 1.
-
-    Returns:
-    - numpy.ndarray: The updated matrix with specified positions set to 1.
-    """
-    # Convert the list of indices into a tuple of row and column indices
-    mask_binary[np.arange(len(mask_binary))[:,None], mask_index_chunk[...,0], mask_index_chunk[...,1]] = 1
-    return mask_binary
-
 def process_mask(mask_binary, kernel, size_gaussblur):
     mask_binary_closed = cv2.morphologyEx(mask_binary, op=cv2.MORPH_CLOSE, kernel=kernel)
     mask_weight = cv2.GaussianBlur(mask_binary_closed.astype(np.float32), ksize=(size_gaussblur, size_gaussblur), sigmaX=0)
@@ -1162,7 +1144,7 @@ for X_real, X_fake, y_real, y_fake in tqdm(dataloader_real_fake, leave=True, des
     X_real.requires_grad, X_fake.requires_grad = True, True
     for attr_name, attr_method in zip(attr_names, attr_methods):
         # add method_kwargs, or attr_kwargs depending on the method, # method_kwargs={"num_layer": -3})
-        attr_batch = Attribution(model, attr_method, X_fake, X_real, y_fake)
+        attr_batch = Attribution(model, attr_method, X_fake, X_real, y_fake, method_kwargs=None, attr_kwargs=None)
         attr_batch = normalize_attribution(attr_batch, percentile=percentile)
         attr_sorted_index = torch.dstack(torch.unravel_index(torch.argsort(attr_batch.view(attr_batch.size(0), -1), dim=1, descending=True),
                                                              tuple(X_real.shape[-2:])))
@@ -1174,73 +1156,31 @@ for X_real, X_fake, y_real, y_fake in tqdm(dataloader_real_fake, leave=True, des
         # free up memory
         del attr_batch, attr_sorted_index
         torch.cuda.empty_cache()
-        start_time = time.time()
-        # attr_sorted_index = np.array_split(attr_sorted_index, splitting_point, axis=1)
-        break
-        " --First option: not optimal - 35 s"
-        # mask_size_batch, dac_batch = [], []
-        # mask_binary = np.zeros(tuple(X_real.shape[:1] + X_real.shape[-2:]), dtype=np.uint8)
-        # for mask_index_chunk in attr_sorted_index:
-        #     mask_binary[np.arange(len(mask_binary))[:,None], mask_index_chunk[...,0], mask_index_chunk[...,1]] = 1
-        #     with Pool(min(batch_size, cpu_count())) as pool: # with Pool(cpu_count()) as pool:
-        #         mask_binary_closed = np.array(pool.map(partial(cv2.morphologyEx, op=cv2.MORPH_CLOSE, kernel=kernel), mask_binary))
-        #         mask_weight = torch.tensor(np.array(pool.map(partial(cv2.GaussianBlur, ksize=(size_gaussblur, size_gaussblur), sigmaX=0), mask_binary_closed.astype(np.float32))),
-        #                                    device=device).unsqueeze(1) # add channel for multiplication with X
-        #     mask_size_batch.append(mask_binary_closed.sum(axis=(1,2)))
-        #     with torch.no_grad():
-        #         X_hybrid = (1 - mask_weight) * X_fake + mask_weight * X_real
-        #         y_hat_hybrid_log = F.softmax(model(X_hybrid), dim=1)
-        #         dac_batch.append((y_hat_hybrid_log[np.arange(len(y_real)), y_real] - y_hat_fake_log[np.arange(len(y_real)), y_real]).cpu().numpy())
-        # mask_size_tot[attr_name].append(np.column_stack(mask_size_batch))
-        # dac_tot[attr_name].append(np.column_stack(dac_batch))
 
-
-        " --Second option: for mask computation only - 6.4 s"
-
-
-        # mask_binary = np.zeros(tuple(X_real.shape[:1] + X_real.shape[-2:]), dtype=np.uint8)
-        # with Pool(cpu_count()) as pool:
-        #     mask_binary_all = np.array(pool.map(partial(set_positions_to_one, mask_binary=mask_binary), attr_sorted_index)).cumsum(axis=0).astype(np.uint8)
-        #     mask_binary_closed_all = np.array(pool.map(partial(cv2.morphologyEx, op=cv2.MORPH_CLOSE, kernel=kernel),
-        #                                                mask_binary_all.reshape(-1, *mask_binary_all.shape[-2:])))
-        #     mask_weight_all = np.array(pool.map(partial(cv2.GaussianBlur, ksize=(size_gaussblur, size_gaussblur), sigmaX=0),
-        #                                     mask_binary_closed_all.astype(np.float32)))
-        #     mask_binary_closed_all = mask_binary_closed_all.reshape(*mask_binary_all.shape)
-        #     mask_weight_all = mask_weight_all.reshape(*mask_binary_all.shape)
-
-        " --Third option: for mask computation only - 6.01 s"
-
-        mask_binary = np.zeros(tuple(X_real.shape[:1] + X_real.shape[-2:]), dtype=np.uint8)
-        func_set_positions_to_one = partial(set_positions_to_one, mask_binary=mask_binary)
         func_process_mask = partial(process_mask, kernel=kernel, size_gaussblur=size_gaussblur)
-        with Pool(cpu_count()) as pool:
-            mask_binary_all = np.array(pool.map(func_set_positions_to_one, attr_sorted_index)).cumsum(axis=0).astype(np.uint8).reshape(-1, *mask_binary.shape[-2:])
-            # mask_binary_closed_all, mask_weight_all = tuple(map(lambda x: np.array(x).reshape(-1,*mask_binary.shape),
-            #                                                     zip(*pool.map(func_process_mask,
-            #                                                              mask_binary_all))))
+        mask_binary_all = mask_binary_all.reshape(-1, *mask_binary_all.shape[-2:])
+        with ThreadPool(cpu_count()) as pool:
+            result = pool.map(func_process_mask, mask_binary_all)
+        mask_binary_closed_all, mask_weight_all = tuple(map(lambda x: np.array(x).reshape(X_real.shape[0], -1, *X_real.shape[-2:]), zip(*result)))
 
-        # dac_batch = []
-        # mask_weight_all_split = np.array_split(mask_weight_all, np.arange(0, mask_weight_all.shape[0], batch_size_mask // mask_weight_all.shape[1]))[1:]
-        # with torch.no_grad():
-        #     X_real, X_fake = X_real.unsqueeze(0), X_fake.unsqueeze(0)
-        #     for mask_weight in mask_weight_all_split:
-        #         mask_weight = torch.tensor(mask_weight).to(device).unsqueeze(-3)
-        #         X_hybrid = ((1 - mask_weight) * X_fake + mask_weight * X_real).view(-1, *X_real.shape[-3:])
-        #         y_hat_hybrid_log = F.softmax(model(X_hybrid), dim=1).view(*mask_weight.shape[:2], -1)
-        #         dac_batch.append(((y_hat_hybrid_log[:, np.arange(len(y_real)), y_real] - y_hat_fake_log[np.arange(len(y_real)), y_real]).T).cpu().numpy())
-        #     # free up memory
-        #     del mask_weight, X_hybrid, y_hat_hybrid_log
-        #     torch.cuda.empty_cache()
+        dac_batch = []
+        mask_weight_all_split = np.array_split(mask_weight_all,
+                                               np.arange(0, mask_weight_all.shape[1], batch_size_mask // mask_weight_all.shape[0]),
+                                               axis=1)[1:]
+        with torch.no_grad():
+            X_real, X_fake = X_real.unsqueeze(1), X_fake.unsqueeze(1)
+            for mask_weight in mask_weight_all_split:
+                mask_weight = torch.tensor(mask_weight).to(device).unsqueeze(-3)
+                X_hybrid = ((1 - mask_weight) * X_fake + mask_weight * X_real).view(-1, *X_real.shape[-3:])
 
-        # mask_size_tot[attr_name].append(mask_binary_closed_all.sum(axis=(2,3)).T)
-        # dac_tot[attr_name].append(np.column_stack(dac_batch))
+                y_hat_hybrid_log = F.softmax(model(X_hybrid), dim=1).view(*mask_weight.shape[:2], -1)
+                dac_batch.append((y_hat_hybrid_log[np.arange(len(y_real)), :, y_real] - y_hat_fake_log[np.arange(len(y_real)), y_real].unsqueeze(1)).cpu().numpy())
+            # free up memory
+            del mask_weight, X_hybrid, y_hat_hybrid_log
+            torch.cuda.empty_cache()
 
-
-        end_time = time.time()
-        print(f"Execution time: {end_time - start_time:.4f} seconds")
-
-
-
+        mask_size_tot[attr_name].append(mask_binary_closed_all.sum(axis=(2,3)))
+        dac_tot[attr_name].append(np.column_stack(dac_batch))
 
         break
     break
