@@ -893,7 +893,7 @@ def visualize_attribution_mask(attributions, mask_weight, mask_size,
     return fig, axes
 
 
-def plot_attr_img(model, dataloader_real_fake, fig_directory, name_fig, num_img=24,
+def plot_attr_img(model, dataloader_real_fake, fig_name, fig_directory=Path("./figures"), num_img=24,
                   attr_methods=[D_InGrad, IntegratedGradients, DeepLift, D_GuidedGradCam, D_GradCam],
                   attr_names=["D_InputXGrad", "IntegratedGradients", "DeepLift", "D_GuidedGradcam", "D_GradCam"],
                   percentile=98,
@@ -936,9 +936,10 @@ def plot_attr_img(model, dataloader_real_fake, fig_directory, name_fig, num_img=
                 break
         if curr_img == num_img:
             break
-    fig.savefig(fig_directory / name_fig)
+    fig_directory = Path(fig_directory) #just in case formatting hasnt been done
+    fig.savefig(fig_directory / fig_name)
 
-def plot_attr_mask_img(model, dataloader_real_fake, fig_directory, name_fig, num_img=24,
+def plot_attr_mask_img(model, dataloader_real_fake, fig_name, fig_directory=Path("./figures"), num_img=24,
                        steps=200, head_tail=(1,5), shift=0.7, selected_mask=[0, 50, 100],
                        size_closing=10, size_gaussblur=11,
                        attr_methods=[D_InGrad, IntegratedGradients, DeepLift, D_GuidedGradCam, D_GradCam],
@@ -1003,7 +1004,8 @@ def plot_attr_mask_img(model, dataloader_real_fake, fig_directory, name_fig, num
                 break
         if curr_img == num_img:
             break
-    fig.savefig(fig_directory / name_fig)
+    fig_directory = Path(fig_directory) #just in case formatting hasnt been done
+    fig.savefig(fig_directory / fig_name)
 
 """
 ------- Mask creation and DAC score --------
@@ -1182,8 +1184,71 @@ def dac_curve_computation(model, dataloader_real_fake,
             count += 1
             if count == early_stop:
                 break
+
+    mask_size_tot = {key: np.vstack(value) for key, value in mask_size_tot.items()}
+    dac_tot = {key: np.vstack(value) for key, value in dac_tot.items()}
     mat_count, mat_acc = mat_count.cpu().numpy(), mat_acc.cpu().numpy()
     return mask_size_tot, dac_tot, mat_count, mat_acc
+
+def format_mask_dac_df(mask_size_tot, dac_tot, mat_count, mat_acc, save_df=True,
+                       file_name_mask_dac='mask_dac_interp_df.csv', file_name_acc='accuracy_df.csv', file_directory="mask_dac_results"):
+
+    accuracy_df = (pd.DataFrame(mat_count).melt(ignore_index=False, value_name="count", var_name="y_fake").reset_index(names="y_true")
+                    .merge(
+                        pd.DataFrame(mat_acc).melt(ignore_index=False, value_name="acc", var_name="y_fake").reset_index(names="y_true"),
+                        on=["y_true", "y_fake"]))
+    accuracy_df = accuracy_df.assign(acc_norm = accuracy_df["acc"] / accuracy_df["count"])
+
+    dac_interp_tot = {key: np.array(list(starmap(lambda x, y: np.interp(mask_size_tot[key].mean(axis=0), x, y), zip(mask_size_tot[key], dac_tot[key]))))
+                      for key in dac_tot.keys()}
+
+    mask_size_df = pd.concat([
+        pd.DataFrame(value).melt(ignore_index=False, value_name="mask_size", var_name="steps").assign(attr_method = np.prod(value.shape) * [key]).reset_index(names="sample")
+        for key, value in mask_size_tot.items()])
+    dac_df = pd.concat([
+        pd.DataFrame(value).melt(ignore_index=False, value_name="dac", var_name="steps").assign(attr_method = np.prod(value.shape) * [key]).reset_index(names="sample")
+        for key, value in dac_tot.items()])
+    dac_interp_df = pd.concat([
+        pd.DataFrame(value).melt(ignore_index=False, value_name="dac_interp", var_name="steps").assign(attr_method = np.prod(value.shape) * [key]).reset_index(names="sample")
+        for key, value in dac_interp_tot.items()])
+    mask_dac_df = pd.merge(pd.merge(mask_size_df,dac_df, on=["sample", "steps", "attr_method"]), dac_interp_df, on=["sample", "steps", "attr_method"])
+    mask_dac_df["mask_size_interp"] = mask_dac_df.groupby(["attr_method", "steps"])["mask_size"].transform("mean")
+
+    if save_df:
+        file_directory = Path(file_directory)
+        if file_name_mask_dac[-4:] != ".csv":
+            file_name_mask_dac += ".csv"
+        if file_name_acc[-4:] != ".csv":
+            file_name_acc += ".csv"
+        mask_dac_df.to_csv(file_directory / file_name_mask_dac, index=False)
+        accuracy_df.to_csv(file_directory / file_name_acc, index=False)
+    return mask_dac_df, accuracy_df
+
+def plot_mask_dac_fig(mask_dac_df, accuracy_df, fig_name="mask_size_dac", fig_directory=Path("./figures")):
+
+    fig, axis = plt.subplots(1, 3, figsize=(15,6))
+    axis = axis.flatten()
+
+    sns.lineplot(data=mask_dac_df, x="steps", y="mask_size", hue="attr_method", ax=axis[0], legend=False)# , estimator='mean', errorbar=None)
+    axis[0].set_title('Mask Size Against Steps')
+    axis[0].set_xlabel('Steps')
+    axis[0].set_ylabel('Mask Size')
+    axis[0].grid(True)
+
+    sns.lineplot(data=mask_dac_df, x="mask_size_interp", y="dac_interp", hue="attr_method", ax=axis[1])#, estimator='mean', errorbar=None)
+    axis[1].set_title('Mask Size Against DAC')
+    axis[1].set_xlabel('mask_size')
+    axis[1].set_ylabel('dac')
+    axis[1].grid(True)
+
+    sns.heatmap(accuracy_df.pivot(index="y_true", columns="y_fake", values="acc_norm"),
+                ax=axis[2], annot=True, fmt=".2f", vmin=0, vmax=1)
+    tot_acc = accuracy_df["acc"].sum() / accuracy_df["count"].sum()
+    axis[2].set_title(f'Pred accuracy per class and transition - tot_acc: {tot_acc}')
+    axis[2].set_title(f'Accuracy when real and fake well predicted\ntot_acc: {tot_acc:.3f}')
+
+    fig.suptitle("DAC curve per attribution method for correctly classified images")
+    fig.savefig(fig_directory / fig_name, dpi=300, bbox_inches='tight')
 
 """
 ------- Test of above code  ----------
@@ -1245,19 +1310,19 @@ VGG_model = VGG_module.model.eval().to(device)
 attr_methods = [D_InGrad, IntegratedGradients, DeepLift, D_GuidedGradCam, D_GradCam, Residual_attr, Random_attr]
 attr_names = ["D_InputXGrad", "IntegratedGradients", "DeepLift", "D_GuidedGradcam", "D_GradCam", "Residual", "Random"]
 
-# plot_attr_img(VGG_model, dataloader_real_fake, fig_directory, name_fig="visualize_attribution", num_img=32,
+# plot_attr_img(VGG_model, dataloader_real_fake, fig_name="visualize_attribution", fig_directory=fig_directory ,num_img=32,
 #               attr_methods=attr_methods, attr_names=attr_names,
 #               percentile=98)
 
-# plot_attr_mask_img(VGG_model, dataloader_real_fake, fig_directory, name_fig="visualize_attribution_mask",
+# plot_attr_mask_img(VGG_model, dataloader_real_fake, fig_name="visualize_attribution_mask", fig_directory=fig_directory,
 #                    num_img=24, steps=200, head_tail=(1,5), shift=0.7, selected_mask=[0, 50, 100],
 #                    size_closing=10, size_gaussblur=11,
 #                    attr_methods=attr_methods, attr_names=attr_names,
 #                    percentile=98)
 
 # Compute DAC curve score of multiple attribution method
-attr_methods = [D_InGrad, IntegratedGradients, DeepLift, D_GuidedGradCam, D_GradCam, Residual_attr, Random_attr][:]
-attr_names = ["D_InputXGrad", "IntegratedGradients", "DeepLift", "D_GuidedGradcam", "D_GradCam", "Residual", "Random"][:]
+attr_methods = [D_InGrad, IntegratedGradients, DeepLift, D_GuidedGradCam, D_GradCam, Residual_attr, Random_attr][:1]
+attr_names = ["D_InputXGrad", "IntegratedGradients", "DeepLift", "D_GuidedGradcam", "D_GradCam", "Residual", "Random"][:1]
 mask_size_tot, dac_tot, mat_count, mat_acc = dac_curve_computation(VGG_model, dataloader_real_fake,
                                                                    attr_methods=attr_methods,
                                                                    attr_names=attr_names,
@@ -1266,59 +1331,17 @@ mask_size_tot, dac_tot, mat_count, mat_acc = dac_curve_computation(VGG_model, da
                                                                    percentile=98,
                                                                    size_closing=10,
                                                                    size_gaussblur=11,
-                                                                   early_stop=None, #None,
+                                                                   early_stop=50, #None,
                                                                    method_kwargs_dict=None, #{"D_GradCam": {"num_layer": -3}}
                                                                    attr_kwargs_dict=None)
 
-tot_acc = mat_acc.sum() / mat_count.sum()
-mat_acc_norm = mat_acc / mat_count
+file_name_mask_dac = "mask_dac_df" + f"_split_{split}_fold_{fold}_mode_{mode}" + suffix + ".csv"
+file_name_acc = "accuracy_df" + f"_split_{split}_fold_{fold}_mode_{mode}" + suffix + ".csv"
 
-
-mask_size_tot = {key: np.vstack(value) for key, value in mask_size_tot.items()}
-dac_tot = {key: np.vstack(value) for key, value in dac_tot.items()}
-dac_interp_tot = {key: np.array(list(starmap(lambda x, y: np.interp(mask_size_tot[key].mean(axis=0), x, y), zip(mask_size_tot[key], dac_tot[key]))))
-                  for key in dac_tot.keys()}
-
-mask_size_df = pd.concat([
-    pd.DataFrame(value).melt(ignore_index=False, value_name="mask_size", var_name="steps").assign(attr_method = np.prod(value.shape) * [key]).reset_index(names="sample")
-    for key, value in mask_size_tot.items()])
-dac_df = pd.concat([
-    pd.DataFrame(value).melt(ignore_index=False, value_name="dac", var_name="steps").assign(attr_method = np.prod(value.shape) * [key]).reset_index(names="sample")
-    for key, value in dac_tot.items()])
-dac_interp_df = pd.concat([
-    pd.DataFrame(value).melt(ignore_index=False, value_name="dac_interp", var_name="steps").assign(attr_method = np.prod(value.shape) * [key]).reset_index(names="sample")
-    for key, value in dac_interp_tot.items()])
-mask_dac_interp_df = pd.merge(pd.merge(mask_size_df,dac_df, on=["sample", "steps", "attr_method"]), dac_interp_df, on=["sample", "steps", "attr_method"])
-mask_dac_interp_df["mask_size_interp"] = mask_dac_interp_df.groupby(["attr_method", "steps"])["mask_size"].transform("mean")
-
-
-# mask_dac_df['mask_size_bin'] = pd.cut(mask_dac_df['mask_size'], bins=200)  # Adjust `bins` as needed
-# agg_df = mask_dac_df.groupby(["attr_method", "steps"], observed=True).agg(
-#     mask_size_bin_mean=('mask_size', 'mean')).reset_index()
-# mask_dac_df = pd.merge(mask_dac_df, agg_df, on=["mask_size_bin", "attr_method"], how="left")
-
-
-fig, axis = plt.subplots(1, 3, figsize=(15,6))
-axis = axis.flatten()
-# df_dac = pd.DataFrame(data=np.vstack(dac_tot)).melt(ignore_index=False)
-# df.index.name="sample"
-sns.lineplot(data=mask_dac_interp_df, x="steps", y="mask_size", hue="attr_method", ax=axis[0])# , estimator='mean', errorbar=None)
-# sns.lineplot(data=mask_dac_interp_df, x="steps", y="mask_size_interp", hue="attr_method", ax=axis[0])# , estimator='mean', errorbar=None)
-axis[0].set_title('Mask Size Against Steps')
-axis[0].set_xlabel('Steps')
-axis[0].set_ylabel('Mask Size')
-axis[0].grid(True)
-
-sns.lineplot(data=mask_dac_interp_df, x="mask_size_interp", y="dac_interp", hue="attr_method", ax=axis[1])#, estimator='mean', errorbar=None)
-axis[1].set_title('Mask Size Against DAC')
-axis[1].set_xlabel('mask_size')
-axis[1].set_ylabel('dac')
-axis[1].grid(True)
-
-sns.heatmap(mat_acc_norm, ax=axis[2], annot=True, fmt=".2f", xticklabels=range(mat_acc_norm.shape[0]), yticklabels=range(mat_acc_norm.shape[0]), vmin=0, vmax=1)
-axis[2].set_title(f'Pred accuracy per class and transition - tot_acc: {tot_acc}')
-axis[2].set_title(f'Acuracy when real and fake well predicted\ntot_acc: {tot_acc:.3f}')
-axis[2].set_xlabel('y_real')
-axis[2].set_ylabel('y_fake')
-
-plt.savefig(fig_directory / 'mask_size_dac.png', dpi=300, bbox_inches='tight')
+mask_dac_df, accuracy_df = format_mask_dac_df(mask_size_tot, dac_tot, mat_count, mat_acc, save_df=True,
+                                              file_name_mask_dac=file_name_mask_dac,
+                                              file_name_acc=file_name_acc,
+                                              file_directory=Path("mask_dac_results"))
+# mask_dac_df, accuracy_df = pd.read_csv(file_name_mask_dac), pd.read_csv(file_name_acc)
+fig_name = "mask_size_dac"  f"_split_{split}_fold_{fold}_mode_{mode}" + suffix + ".png"
+plot_mask_dac_fig(mask_dac_df, accuracy_df, fig_name=fig_name, fig_directory=fig_directory)
