@@ -1,11 +1,12 @@
 #!/usr/bin/env python
 # coding: utf-8
-from functools import partial
+from functools import partial, reduce
 from itertools import starmap
 
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 import time
 
+from pathlib import Path
 import warnings
 import cv2
 import matplotlib.pyplot as plt
@@ -812,7 +813,7 @@ def normalize_attribution(attribution: torch.Tensor, percentile: Union[int, floa
     return attribution
 
 """
-------- Visualisation of attribution function ----------
+------- Visualization of attribution function ----------
 """
 
 def visualize_attribution(attributions, X_real, X_fake, y_real, y_fake, y_hat_real, y_hat_fake,  method_names=None,
@@ -893,6 +894,59 @@ def visualize_attribution_mask(attributions, mask_weight, mask_size,
     # plt.tight_layout()
     return fig, axes
 
+def visualize_attribution_min_mask(attributions, mask_weights, mask_sizes,
+                                   X_real, X_fake, y_real, y_fake, y_hat_real, y_hat_fake,
+                                   method_names=None,
+                                   fig=None, axes=None):
+    # Ensure X_real and X_fake are in channel-last format for plotting
+    X_real = np.transpose(X_real, (1, 2, 0))
+    X_fake = np.transpose(X_fake, (1, 2, 0))
+
+    num_methods = len(attributions)  # Number of attribution methods
+    if fig is None or axes is None:
+        fig, axes = plt.subplots(5, num_methods + 2, figsize=(5 * (num_methods + 2), 5))
+
+    # Plot X_real once in the first column
+    axes[0][0].imshow(X_real)
+    axes[0][0].set_title(f"Original Image\nclass: {y_real} / pred: {y_hat_real}")
+
+    # Plot X_fake once in the second column
+    axes[0][1].imshow(X_fake)
+    axes[0][1].set_title(f"Counterfactual Image\nclass: {y_fake} / pred: {y_hat_fake}")
+
+    # Plot each attribution map in subsequent columns as a heatmap
+    for i, (attribution, mask_weight, mask_size) in enumerate(zip(attributions, mask_weights, mask_sizes)):
+        # attribution
+        im = axes[0][i + 2].imshow(attribution, cmap="bwr_r", vmin=-1, vmax=1) # attribution should be already normalized
+        title = method_names[i] if method_names else f"Attribution {i+1}"
+        axes[0][i + 2].set_title(title)
+        # mask_weight
+        mask_weight = np.clip(mask_weight, 0, 1)
+        axes[1][i + 2].imshow(mask_weight, cmap="viridis", vmin=0, vmax=1)
+        axes[1][i + 2].set_title(f"mask_size: {mask_size}")
+        # mask * X_real
+        mask_weight = mask_weight[:, :, None]
+        axes[2][i + 2].imshow(mask_weight * X_real)
+        if i == 0:
+            axes[2][i + 2].set_title("$m * X_{real}$")
+        # mask * X_fake
+        axes[3][i + 2].imshow(mask_weight * X_fake)
+        if i == 0:
+            axes[3][i + 2].set_title("$m * X_{fake}$")
+        # X_hybrid
+        axes[4][i + 2].imshow(mask_weight * X_real + (1 - mask_weight) * X_fake)
+        if i == 0:
+            axes[4][i + 2].set_title("$X_{hybrid} = m * X_{real} + (1 - m) * X_{fake}$")
+
+    # Add color bar for the attribution maps
+    cbar = fig.colorbar(im, ax=axes[0,-1], orientation='vertical', fraction=0.05, pad=0.05)
+    cbar.set_label("Attribution Score")
+
+    for i in range(axes.shape[0]):
+        for j in range(axes.shape[1]):
+            axes[i][j].axis("off")
+    # plt.tight_layout()
+    return fig, axes
 
 def plot_attr_img(model, dataloader_real_fake, fig_name, fig_directory=Path("./figures"), num_img=24,
                   attr_methods=[D_InGrad, IntegratedGradients, DeepLift, D_GuidedGradCam, D_GradCam],
@@ -1008,6 +1062,99 @@ def plot_attr_mask_img(model, dataloader_real_fake, fig_name, fig_directory=Path
     fig_directory = Path(fig_directory) #just in case formatting hasnt been done
     fig.savefig(fig_directory / fig_name)
 
+
+
+def plot_attr_min_mask_img(model, dataloader_real_fake, mask_dac_df, fig_name, fig_directory=Path("./figures"), num_img=24,
+                       steps=200, head_tail=(1,5), shift=0.7, selected_mask=[0, 50, 100],
+                       size_closing=10, size_gaussblur=11,
+                       attr_methods=[D_InGrad, IntegratedGradients, DeepLift, D_GuidedGradCam, D_GradCam],
+                       attr_names=["D_InputXGrad", "IntegratedGradients", "DeepLift", "D_GuidedGradcam", "D_GradCam"],
+                       percentile=98,
+                       method_kwargs_dict=None,
+                       attr_kwargs_dict=None):
+    id_min_mask_dict = compute_id_min_mask(mask_dac_df)
+    method_kwargs_dict = build_kwargs_dict(attr_names=attr_names, kwargs_dict=method_kwargs_dict)
+    attr_kwargs_dict = build_kwargs_dict(attr_names=attr_names, kwargs_dict=attr_kwargs_dict)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE,(size_closing, size_closing))
+
+    # def splitting_point to get the desired mask
+    tot_pixels = dataloader_real_fake.dataset[0][0].shape[-2:].numel()
+    splitting_point = make_splitting_point(size=tot_pixels, steps=steps, head_tail=head_tail, shift=shift)
+    # splitting_point_selected = splitting_point[selected_mask]
+
+    device = ("cuda" if torch.cuda.is_available() else "cpu")
+    model = model.to(device)
+    curr_img = 0
+    num_y_ax_per_img = 5 # att, mask, m*x_r, (1-m)*x_c, x_h
+    fig, axis = plt.subplots(num_img * num_y_ax_per_img, len(attr_methods) + 2,
+                             figsize=(5 * (len(attr_methods) + 2), 5 * num_img * (len(selected_mask)+1)))
+    sample_count = 0
+    for X_real, X_fake, y_real, y_fake in dataloader_real_fake:
+        X_real, y_real, X_fake, y_fake = X_real.to(device), y_real.to(device), X_fake.to(device), y_fake.to(device)
+        with torch.no_grad():
+            y_hat_real_log = F.softmax(model(X_real), dim=1)#.argmax(dim=1)
+            y_hat_fake_log = F.softmax(model(X_fake), dim=1)#.argmax(dim=1)
+            pred_true_mask = (y_real == y_hat_real_log.argmax(dim=1)) & (y_fake == y_hat_fake_log.argmax(dim=1))
+
+        # plot only correct classification
+        if pred_true_mask.sum() > 0:
+            X_real = X_real[pred_true_mask]
+            X_fake = X_fake[pred_true_mask]
+            y_real = y_real[pred_true_mask]
+            y_fake = y_fake[pred_true_mask]
+            y_hat_real_log = y_hat_real_log[pred_true_mask]
+            y_hat_fake_log = y_hat_fake_log[pred_true_mask]
+        else:
+            continue
+
+        with torch.no_grad():
+            y_hat_real = y_hat_real_log.argmax(dim=-1)
+            y_hat_fake = y_hat_fake_log.argmax(dim=-1)
+
+        X_real.requires_grad, X_fake.requires_grad = True, True
+        attributions = []
+        mask_weight_selected = []
+        mask_size_selected = []
+        sample_id = np.arange(X_real.shape[0]) + sample_count
+        sample_count += X_real.shape[0] # update for next passage
+        for attr_name, attr_method in zip(attr_names, attr_methods):
+            # add method_kwargs, or attr_kwargs depending on the method, # method_kwargs={"num_layer": -3})
+            attr_batch = Attribution(model, attr_method, X_fake, X_real, y_fake,
+                                     method_kwargs=method_kwargs_dict[attr_name],
+                                     attr_kwargs=attr_kwargs_dict[attr_name])
+
+            attr_batch = normalize_attribution(attr_batch, percentile=percentile)
+            attributions.append(attr_batch.cpu().numpy())
+            mask_binary_closed, mask_weight = get_batch_process_mask(attr_batch, splitting_point, kernel, size_gaussblur)
+            mask_size = mask_binary_closed.sum(axis=(2,3))
+
+            selected_id = np.array([id_min_mask_dict[idx][attr_name] for idx in sample_id])
+            # return id_min_mask_dict, sample_id,  mask_size, mask_weight
+            mask_weight_selected.append(mask_weight[np.arange(selected_id.shape[0]), selected_id])
+            mask_size_selected.append(mask_size[np.arange(selected_id.shape[0]), selected_id])
+
+        attributions = np.stack(attributions, axis=1)
+        mask_weight_selected = np.stack(mask_weight_selected, axis=1)
+        mask_size_selected = np.stack(mask_size_selected, axis=1)
+        # if len(mask_size_selected.shape) < 3:
+        #     mask_weight_selected = mask_weight_selected[:, :, None]
+        #     mask_size_selected = mask_size_selected[:, :, None]
+
+        for i in range(X_real.shape[0]):
+            fig, _ = visualize_attribution_min_mask(attributions[i], mask_weight_selected[i], mask_size_selected[i],
+                                                    ((1+X_real[i])/2).detach().cpu().numpy(), ((1+X_fake[i])/2).detach().cpu().numpy(),
+                                                    y_real[i].detach().cpu().numpy(), y_fake[i].detach().cpu().numpy(),
+                                                    y_hat_real[i].detach().cpu().numpy(), y_hat_fake[i].detach().cpu().numpy(),
+                                                    attr_names,
+                                                    fig,
+                                                    axis[num_y_ax_per_img * curr_img: num_y_ax_per_img * curr_img + num_y_ax_per_img,:])
+            curr_img += 1
+            if curr_img == num_img:
+                break
+        if curr_img == num_img:
+            break
+    fig_directory = Path(fig_directory) #just in case formatting hasnt been done
+    fig.savefig(fig_directory / fig_name)
 """
 ------- Mask creation and DAC score --------
 """
@@ -1031,7 +1178,8 @@ def make_splitting_point(size: int,
     """
     proportions = np.array([head_tail[0] if i < shift*steps else head_tail[1] for i in range(steps)])
     splitting_point = ((proportions * size)/proportions.sum()).cumsum().astype(int)
-    splitting_point[-1] = size - 1
+    splitting_point[-1] = size - 1 # include mask = 1
+    splitting_point[0] = 0 # include mask = 0
     return splitting_point
 
 def process_mask(mask_binary: np.ndarray,
@@ -1066,6 +1214,11 @@ def get_batch_process_mask(attr_batch, splitting_point, kernel, size_gaussblur):
                                attr_batch[np.arange(batch_size)[:, None],
                                           attr_sorted_index[...,0],
                                           attr_sorted_index[...,1]].unsqueeze(-1).unsqueeze(-1)).cpu().numpy().astype(np.uint8)
+
+    # ensure the mask full of zero is included if the splitting_point is 0
+    if splitting_point[0] == 0:
+        mask_binary_all[:, 0, :, :] = np.zeros([mask_binary_all.shape[0], *mask_binary_all.shape[-2:]], dtype=np.uint8)
+
     # free up memory
     del attr_batch, attr_sorted_index
     torch.cuda.empty_cache()
@@ -1108,10 +1261,8 @@ def dac_curve_computation(model, dataloader_real_fake,
         counts = torch.bincount(indices, minlength=size * size)
         return counts.view(size, size)
 
-
     device = ("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
-
 
     # def splitting_point to get mask later
     tot_pixels = dataloader_real_fake.dataset[0][0].shape[-2:].numel()
@@ -1126,6 +1277,7 @@ def dac_curve_computation(model, dataloader_real_fake,
 
     mask_size_tot = {attr_name: [] for attr_name in attr_names}
     dac_tot = {attr_name: [] for attr_name in attr_names}
+    pred_hybrid_tot = {attr_name: [] for attr_name in attr_names}
     for X_real, X_fake, y_real, y_fake in tqdm(dataloader_real_fake, leave=True, desc="batch"):
         X_real, y_real, X_fake, y_fake = X_real.to(device), y_real.to(device), X_fake.to(device), y_fake.to(device)
         with torch.no_grad():
@@ -1153,6 +1305,8 @@ def dac_curve_computation(model, dataloader_real_fake,
             X_fake = X_fake[pred_true_mask]
             y_real = y_real[pred_true_mask]
             y_fake = y_fake[pred_true_mask]
+            y_hat_real_log = y_hat_real_log[pred_true_mask]
+            y_hat_fake_log = y_hat_fake_log[pred_true_mask]
         else:
             continue
 
@@ -1164,10 +1318,13 @@ def dac_curve_computation(model, dataloader_real_fake,
                                      attr_kwargs=attr_kwargs_dict[attr_name])
             attr_batch = normalize_attribution(attr_batch, percentile=percentile)
             mask_binary_closed_all, mask_weight_all = get_batch_process_mask(attr_batch, splitting_point, kernel, size_gaussblur)
+            # mask_binary_closed_all = np.insert(mask_binary_closed_all, 0, np.zeros(mask_binary_closed_all.shape[-2:]) ,axis=1)
+            # mask_weight_all = np.insert(mask_weight_all, 0, np.zeros(mask_weight_all.shape[-2:]) ,axis=1)
             mask_weight_all_split = np.array_split(mask_weight_all,
                                                    np.arange(0, mask_weight_all.shape[1], batch_size_mask // mask_weight_all.shape[0]),
                                                    axis=1)[1:]
             dac_batch = []
+            pred_hybrid_batch = []
             with torch.no_grad():
                 for mask_weight in mask_weight_all_split:
                     mask_weight = torch.tensor(mask_weight).to(device).unsqueeze(-3)
@@ -1175,12 +1332,14 @@ def dac_curve_computation(model, dataloader_real_fake,
 
                     y_hat_hybrid_log = F.softmax(model(X_hybrid), dim=1).view(*mask_weight.shape[:2], -1)
                     dac_batch.append((y_hat_hybrid_log[np.arange(len(y_real)), :, y_real] - y_hat_fake_log[np.arange(len(y_real)), y_real].unsqueeze(1)).cpu().numpy())
+                    pred_hybrid_batch.append(y_hat_hybrid_log.argmax(dim=-1).cpu().numpy())
                 # free up memory
                 del mask_weight, X_hybrid, y_hat_hybrid_log
                 torch.cuda.empty_cache()
 
             mask_size_tot[attr_name].append(mask_binary_closed_all.sum(axis=(2,3)) / tot_pixels)
             dac_tot[attr_name].append(np.column_stack(dac_batch))
+            pred_hybrid_tot[attr_name].append(np.column_stack(pred_hybrid_batch))
         if early_stop is not None:
             count += 1
             if count == early_stop:
@@ -1188,10 +1347,11 @@ def dac_curve_computation(model, dataloader_real_fake,
 
     mask_size_tot = {key: np.vstack(value) for key, value in mask_size_tot.items()}
     dac_tot = {key: np.vstack(value) for key, value in dac_tot.items()}
+    pred_hybrid_tot = {key: np.vstack(value) for key, value in pred_hybrid_tot.items()}
     mat_count, mat_acc = mat_count.cpu().numpy(), mat_acc.cpu().numpy()
-    return mask_size_tot, dac_tot, mat_count, mat_acc
+    return mask_size_tot, dac_tot, pred_hybrid_tot, mat_count, mat_acc
 
-def format_mask_dac_df(mask_size_tot, dac_tot, mat_count, mat_acc, save_df=True,
+def format_mask_dac_df(mask_size_tot, dac_tot, pred_hybrid_tot, mat_count, mat_acc, save_df=True,
                        file_name_mask_dac='mask_dac_interp_df.csv', file_name_acc='accuracy_df.csv', file_directory="mask_dac_results"):
 
     accuracy_df = (pd.DataFrame(mat_count).melt(ignore_index=False, value_name="count", var_name="y_fake").reset_index(names="y_true")
@@ -1203,17 +1363,34 @@ def format_mask_dac_df(mask_size_tot, dac_tot, mat_count, mat_acc, save_df=True,
     dac_interp_tot = {key: np.array(list(starmap(lambda x, y: np.interp(mask_size_tot[key].mean(axis=0), x, y), zip(mask_size_tot[key], dac_tot[key]))))
                       for key in dac_tot.keys()}
 
-    mask_size_df = pd.concat([
-        pd.DataFrame(value).melt(ignore_index=False, value_name="mask_size", var_name="steps").assign(attr_method = np.prod(value.shape) * [key]).reset_index(names="sample")
-        for key, value in mask_size_tot.items()])
-    dac_df = pd.concat([
-        pd.DataFrame(value).melt(ignore_index=False, value_name="dac", var_name="steps").assign(attr_method = np.prod(value.shape) * [key]).reset_index(names="sample")
-        for key, value in dac_tot.items()])
-    dac_interp_df = pd.concat([
-        pd.DataFrame(value).melt(ignore_index=False, value_name="dac_interp", var_name="steps").assign(attr_method = np.prod(value.shape) * [key]).reset_index(names="sample")
-        for key, value in dac_interp_tot.items()])
-    mask_dac_df = pd.merge(pd.merge(mask_size_df,dac_df, on=["sample", "steps", "attr_method"]), dac_interp_df, on=["sample", "steps", "attr_method"])
+
+    # Define your dictionaries with their associated value names
+    data_dicts = {
+        "pred_hybrid": pred_hybrid_tot,
+        "mask_size": mask_size_tot,
+        "dac": dac_tot,
+        "dac_interp": dac_interp_tot
+    }
+
+    # Process each dictionary and store the melted DataFrames in a list
+    dfs = [
+        pd.concat([
+            pd.DataFrame(value)
+            .melt(ignore_index=False, value_name=value_name, var_name="steps")
+            .assign(attr_method=np.prod(value.shape) * [key])
+            .reset_index(names="sample")
+            for key, value in data.items()
+        ])
+        for value_name, data in data_dicts.items()
+    ]
+
+    # Merge all DataFrames on the common columns
+    mask_dac_df = reduce(lambda left, right: pd.merge(left, right, on=["sample", "steps", "attr_method"]), dfs)
+
+    # Adding the final column
     mask_dac_df["mask_size_interp"] = mask_dac_df.groupby(["attr_method", "steps"])["mask_size"].transform("mean")
+    column_order = ["attr_method", "sample", "steps", "pred_hybrid", "mask_size", "dac", "mask_size_interp", "dac_interp"]
+    mask_dac_df = mask_dac_df[column_order]
 
     if save_df:
         file_directory = Path(file_directory)
@@ -1221,6 +1398,7 @@ def format_mask_dac_df(mask_size_tot, dac_tot, mat_count, mat_acc, save_df=True,
             file_name_mask_dac += ".csv"
         if file_name_acc[-4:] != ".csv":
             file_name_acc += ".csv"
+
         mask_dac_df.to_csv(file_directory / file_name_mask_dac, index=False)
         accuracy_df.to_csv(file_directory / file_name_acc, index=False)
     return mask_dac_df, accuracy_df
@@ -1230,18 +1408,37 @@ def compute_avg_dac(mask_dac_df):
     Compute avg dac score per attribution method.
     Opt for a polars computation but a pandas could have been done.
     """
-    avg_dac_attr =  pl.DataFrame(mask_dac_df).group_by(["sample", "attr_method"], maintain_order=True).agg(
-        pl.map_groups(
-        exprs=["dac", "mask_size"],
-        function=lambda list_of_series: np.trapz(list_of_series[0], list_of_series[1])
-        ).alias("DAC_score"),
-        pl.map_groups(
-        exprs=["dac_interp", "mask_size_interp"],
-        function=lambda list_of_series: np.trapz(list_of_series[0], list_of_series[1])
-        ).alias("DAC_score_interp")
-    ).group_by("attr_method").agg(pl.col("DAC_score_interp").mean()).to_dict(as_series=False)
+    avg_dac_attr = (pl.DataFrame(mask_dac_df)
+                                 .sort(by=["attr_method", "sample", "steps"])
+                                 .group_by(["attr_method", "sample"], maintain_order=True).agg(
+                                     pl.map_groups(
+                                         exprs=["dac", "mask_size"],
+                                         function=lambda list_of_series: np.trapz(list_of_series[0], list_of_series[1])
+                                         ).alias("DAC_score"),
+                                     pl.map_groups(
+                                         exprs=["dac_interp", "mask_size_interp"],
+                                         function=lambda list_of_series: np.trapz(list_of_series[0], list_of_series[1])
+                                         ).alias("DAC_score_interp")
+                                 ).group_by("attr_method").agg(pl.col("DAC_score_interp").mean())).to_dict(as_series=False)
+
     avg_dac_attr = {key: val for key, val in list(zip(*list(avg_dac_attr.values())))}
     return avg_dac_attr
+
+def compute_id_min_mask(mask_dac_df):
+    id_min_mask_list = (pl.DataFrame(mask_dac_df)
+            .sort(by=["attr_method", "sample", "steps"])
+            .group_by(["attr_method", "sample"], maintain_order=True)
+            .agg(pl.col("pred_hybrid"))
+            .with_columns(
+                pl.col("pred_hybrid")
+                .map_elements(lambda list_pred: np.where(list_pred[:-1] != list_pred[1:])[0][-1] + 1)
+                .alias("id_min_mask"))
+            .select(pl.col("attr_method", "sample", "id_min_mask"))
+            ).to_dict(as_series=False)
+    id_min_mask_list = list(zip(*list(id_min_mask_list.values())))
+    id_min_mask_dict = {key1: {key2: value for key2, k1, value in id_min_mask_list  if k1 == key1} for key1 in set(k1 for _, k1, _ in id_min_mask_list)}
+    return id_min_mask_dict
+
 
 def plot_mask_dac_fig(mask_dac_df, accuracy_df, fig_name="mask_size_dac", fig_directory=Path("./figures"), compute_dac=True):
 
@@ -1281,7 +1478,6 @@ def plot_mask_dac_fig(mask_dac_df, accuracy_df, fig_name="mask_size_dac", fig_di
 """
 
 
-from pathlib import Path
 
 import conv_model
 import custom_dataset
@@ -1349,7 +1545,7 @@ attr_names = ["D_InputXGrad", "IntegratedGradients", "DeepLift", "D_GuidedGradca
 # Compute DAC curve score of multiple attribution method
 attr_methods = [D_InGrad, IntegratedGradients, DeepLift, D_GuidedGradCam, D_GradCam, Residual_attr, Random_attr][:]
 attr_names = ["D_InputXGrad", "IntegratedGradients", "DeepLift", "D_GuidedGradcam", "D_GradCam", "Residual", "Random"][:]
-mask_size_tot, dac_tot, mat_count, mat_acc = dac_curve_computation(VGG_model, dataloader_real_fake,
+mask_size_tot, dac_tot, pred_hybrid_tot, mat_count, mat_acc = dac_curve_computation(VGG_model, dataloader_real_fake,
                                                                    attr_methods=attr_methods,
                                                                    attr_names=attr_names,
                                                                    batch_size_mask=512,
@@ -1357,19 +1553,27 @@ mask_size_tot, dac_tot, mat_count, mat_acc = dac_curve_computation(VGG_model, da
                                                                    percentile=98,
                                                                    size_closing=10,
                                                                    size_gaussblur=11,
-                                                                   early_stop=None, #None,
+                                                                   early_stop=10, #None,
                                                                    method_kwargs_dict=None, #{"D_GradCam": {"num_layer": -3}}
                                                                    attr_kwargs_dict=None)
+
 
 file_name_mask_dac = "mask_dac_df" + f"_split_{split}_fold_{fold}_mode_{mode}" + suffix + ".csv"
 file_name_acc = "accuracy_df" + f"_split_{split}_fold_{fold}_mode_{mode}" + suffix + ".csv"
 
-mask_dac_df, accuracy_df = format_mask_dac_df(mask_size_tot, dac_tot, mat_count, mat_acc, save_df=True,
+mask_dac_df, accuracy_df = format_mask_dac_df(mask_size_tot, dac_tot, pred_hybrid_tot, mat_count, mat_acc, save_df=False, #WHETHER TO SAVE FILE
                                               file_name_mask_dac=file_name_mask_dac,
                                               file_name_acc=file_name_acc,
                                               file_directory=Path("mask_dac_results"))
-# mask_dac_df, accuracy_df = pd.read_csv(file_name_mask_dac), pd.read_csv(file_name_acc)
-fig_name = "mask_size_dac"  f"_split_{split}_fold_{fold}_mode_{mode}" + suffix + ".png"
-plot_mask_dac_fig(mask_dac_df, accuracy_df, fig_name=fig_name, fig_directory=fig_directory, compute_dac=True)
+
+# mask_dac_df, accuracy_df = pd.read_csv(Path("mask_dac_results") / file_name_mask_dac), pd.read_csv(Path("mask_dac_results") / file_name_acc)
+# fig_name = "mask_size_dac_small"  f"_split_{split}_fold_{fold}_mode_{mode}" + suffix + ".png"
+# plot_mask_dac_fig(mask_dac_df, accuracy_df, fig_name=fig_name, fig_directory=fig_directory, compute_dac=True)
 
 
+plot_attr_min_mask_img(VGG_model, dataloader_real_fake, mask_dac_df,
+                       fig_name="visualize_attribution_min_mask", fig_directory=fig_directory,
+                       num_img=24, steps=200, head_tail=(1,5), shift=0.7, selected_mask=[0, 50, 100],
+                       size_closing=10, size_gaussblur=11,
+                       attr_methods=attr_methods, attr_names=attr_names,
+                       percentile=98)
