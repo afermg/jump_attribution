@@ -44,6 +44,7 @@ from multiprocessing import Pool, cpu_count
 from multiprocessing.pool import ThreadPool
 
 import pandas as pd
+import polars as pl
 import seaborn as sns
 from tqdm import tqdm
 
@@ -1224,7 +1225,25 @@ def format_mask_dac_df(mask_size_tot, dac_tot, mat_count, mat_acc, save_df=True,
         accuracy_df.to_csv(file_directory / file_name_acc, index=False)
     return mask_dac_df, accuracy_df
 
-def plot_mask_dac_fig(mask_dac_df, accuracy_df, fig_name="mask_size_dac", fig_directory=Path("./figures")):
+def compute_avg_dac(mask_dac_df):
+    """
+    Compute avg dac score per attribution method.
+    Opt for a polars computation but a pandas could have been done.
+    """
+    avg_dac_attr =  pl.DataFrame(mask_dac_df).group_by(["sample", "attr_method"], maintain_order=True).agg(
+        pl.map_groups(
+        exprs=["dac", "mask_size"],
+        function=lambda list_of_series: np.trapz(list_of_series[0], list_of_series[1])
+        ).alias("DAC_score"),
+        pl.map_groups(
+        exprs=["dac_interp", "mask_size_interp"],
+        function=lambda list_of_series: np.trapz(list_of_series[0], list_of_series[1])
+        ).alias("DAC_score_interp")
+    ).group_by("attr_method").agg(pl.col("DAC_score_interp").mean()).to_dict(as_series=False)
+    avg_dac_attr = {key: val for key, val in list(zip(*list(avg_dac_attr.values())))}
+    return avg_dac_attr
+
+def plot_mask_dac_fig(mask_dac_df, accuracy_df, fig_name="mask_size_dac", fig_directory=Path("./figures"), compute_dac=True):
 
     fig, axis = plt.subplots(1, 3, figsize=(15,6))
     axis = axis.flatten()
@@ -1240,6 +1259,13 @@ def plot_mask_dac_fig(mask_dac_df, accuracy_df, fig_name="mask_size_dac", fig_di
     axis[1].set_xlabel('mask_size')
     axis[1].set_ylabel('dac')
     axis[1].grid(True)
+
+    if compute_dac:
+        avg_dac_attr = compute_avg_dac(mask_dac_df)
+        legend = axis[1].get_legend()
+        for text in legend.get_texts():
+            text.set_text(text._text + f" - {avg_dac_attr[text._text]:.3f}")
+        legend.set_title(legend.get_title()._text + " - DAC score")
 
     sns.heatmap(accuracy_df.pivot(index="y_true", columns="y_fake", values="acc_norm"),
                 ax=axis[2], annot=True, fmt=".2f", vmin=0, vmax=1)
@@ -1321,8 +1347,8 @@ attr_names = ["D_InputXGrad", "IntegratedGradients", "DeepLift", "D_GuidedGradca
 #                    percentile=98)
 
 # Compute DAC curve score of multiple attribution method
-attr_methods = [D_InGrad, IntegratedGradients, DeepLift, D_GuidedGradCam, D_GradCam, Residual_attr, Random_attr][:1]
-attr_names = ["D_InputXGrad", "IntegratedGradients", "DeepLift", "D_GuidedGradcam", "D_GradCam", "Residual", "Random"][:1]
+attr_methods = [D_InGrad, IntegratedGradients, DeepLift, D_GuidedGradCam, D_GradCam, Residual_attr, Random_attr][:]
+attr_names = ["D_InputXGrad", "IntegratedGradients", "DeepLift", "D_GuidedGradcam", "D_GradCam", "Residual", "Random"][:]
 mask_size_tot, dac_tot, mat_count, mat_acc = dac_curve_computation(VGG_model, dataloader_real_fake,
                                                                    attr_methods=attr_methods,
                                                                    attr_names=attr_names,
@@ -1331,7 +1357,7 @@ mask_size_tot, dac_tot, mat_count, mat_acc = dac_curve_computation(VGG_model, da
                                                                    percentile=98,
                                                                    size_closing=10,
                                                                    size_gaussblur=11,
-                                                                   early_stop=50, #None,
+                                                                   early_stop=None, #None,
                                                                    method_kwargs_dict=None, #{"D_GradCam": {"num_layer": -3}}
                                                                    attr_kwargs_dict=None)
 
@@ -1344,4 +1370,6 @@ mask_dac_df, accuracy_df = format_mask_dac_df(mask_size_tot, dac_tot, mat_count,
                                               file_directory=Path("mask_dac_results"))
 # mask_dac_df, accuracy_df = pd.read_csv(file_name_mask_dac), pd.read_csv(file_name_acc)
 fig_name = "mask_size_dac"  f"_split_{split}_fold_{fold}_mode_{mode}" + suffix + ".png"
-plot_mask_dac_fig(mask_dac_df, accuracy_df, fig_name=fig_name, fig_directory=fig_directory)
+plot_mask_dac_fig(mask_dac_df, accuracy_df, fig_name=fig_name, fig_directory=fig_directory, compute_dac=True)
+
+
