@@ -883,7 +883,7 @@ def visualize_attribution_mask(attributions, mask_weight, mask_size,
             axes[j+1][0].axis("off")
             axes[j+1][1].axis("off")
             axes[j+1][i + 2].imshow(mask_weight[i][j], cmap="viridis", vmin=0, vmax=1)
-            title = f"mask_size: {mask_size[i][j]}"
+            title = f"mask_size: {mask_size[i][j]:.3f}"
             axes[j+1][i + 2].set_title(title)
             axes[j+1][i + 2].axis("off")
 
@@ -923,7 +923,7 @@ def visualize_attribution_min_mask(attributions, mask_weights, mask_sizes,
         # mask_weight
         mask_weight = np.clip(mask_weight, 0, 1)
         axes[1][i + 2].imshow(mask_weight, cmap="viridis", vmin=0, vmax=1)
-        axes[1][i + 2].set_title(f"mask_size: {mask_size}")
+        axes[1][i + 2].set_title(f"mask_size: {mask_size:.3f}")
         # mask * X_real
         mask_weight = mask_weight[:, :, None]
         axes[2][i + 2].imshow(mask_weight * X_real)
@@ -993,6 +993,7 @@ def plot_attr_img(model, dataloader_real_fake, fig_name, fig_directory=Path("./f
             break
     fig_directory = Path(fig_directory) #just in case formatting hasnt been done
     fig.savefig(fig_directory / fig_name)
+    plt.close()
 
 def plot_attr_mask_img(model, dataloader_real_fake, fig_name, fig_directory=Path("./figures"), num_img=24,
                        steps=200, head_tail=(1,5), shift=0.7, selected_mask=[0, 50, 100],
@@ -1036,7 +1037,7 @@ def plot_attr_mask_img(model, dataloader_real_fake, fig_name, fig_directory=Path
             attr_batch = normalize_attribution(attr_batch, percentile=percentile)
             attributions.append(attr_batch.cpu().numpy())
             mask_binary_closed, mask_weight = get_batch_process_mask(attr_batch, splitting_point_selected, kernel, size_gaussblur)
-            mask_size = mask_binary_closed.sum(axis=(2,3))
+            mask_size = mask_binary_closed.sum(axis=(2,3)) / tot_pixels
             mask_weight_selected.append(mask_weight)
             mask_size_selected.append(mask_size)
 
@@ -1061,11 +1062,12 @@ def plot_attr_mask_img(model, dataloader_real_fake, fig_name, fig_directory=Path
             break
     fig_directory = Path(fig_directory) #just in case formatting hasnt been done
     fig.savefig(fig_directory / fig_name)
+    plt.close()
 
 
 
 def plot_attr_min_mask_img(model, dataloader_real_fake, mask_dac_df, fig_name, fig_directory=Path("./figures"), num_img=24,
-                       steps=200, head_tail=(1,5), shift=0.7, selected_mask=[0, 50, 100],
+                       steps=200, head_tail=(1,5), shift=0.7,
                        size_closing=10, size_gaussblur=11,
                        attr_methods=[D_InGrad, IntegratedGradients, DeepLift, D_GuidedGradCam, D_GradCam],
                        attr_names=["D_InputXGrad", "IntegratedGradients", "DeepLift", "D_GuidedGradcam", "D_GradCam"],
@@ -1080,14 +1082,13 @@ def plot_attr_min_mask_img(model, dataloader_real_fake, mask_dac_df, fig_name, f
     # def splitting_point to get the desired mask
     tot_pixels = dataloader_real_fake.dataset[0][0].shape[-2:].numel()
     splitting_point = make_splitting_point(size=tot_pixels, steps=steps, head_tail=head_tail, shift=shift)
-    # splitting_point_selected = splitting_point[selected_mask]
 
     device = ("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
     curr_img = 0
     num_y_ax_per_img = 5 # att, mask, m*x_r, (1-m)*x_c, x_h
     fig, axis = plt.subplots(num_img * num_y_ax_per_img, len(attr_methods) + 2,
-                             figsize=(5 * (len(attr_methods) + 2), 5 * num_img * (len(selected_mask)+1)))
+                             figsize=(5 * (len(attr_methods) + 2), 5 * num_img * num_y_ax_per_img)
     sample_count = 0
     for X_real, X_fake, y_real, y_fake in dataloader_real_fake:
         X_real, y_real, X_fake, y_fake = X_real.to(device), y_real.to(device), X_fake.to(device), y_fake.to(device)
@@ -1126,7 +1127,8 @@ def plot_attr_min_mask_img(model, dataloader_real_fake, mask_dac_df, fig_name, f
             attr_batch = normalize_attribution(attr_batch, percentile=percentile)
             attributions.append(attr_batch.cpu().numpy())
             mask_binary_closed, mask_weight = get_batch_process_mask(attr_batch, splitting_point, kernel, size_gaussblur)
-            mask_size = mask_binary_closed.sum(axis=(2,3))
+            mask_size = mask_binary_closed.sum(axis=(2,3)) / tot_pixels
+
 
             selected_id = np.array([id_min_mask_dict[idx][attr_name] for idx in sample_id])
             # return id_min_mask_dict, sample_id,  mask_size, mask_weight
@@ -1155,6 +1157,7 @@ def plot_attr_min_mask_img(model, dataloader_real_fake, mask_dac_df, fig_name, f
             break
     fig_directory = Path(fig_directory) #just in case formatting hasnt been done
     fig.savefig(fig_directory / fig_name)
+    plt.close()
 """
 ------- Mask creation and DAC score --------
 """
@@ -1472,6 +1475,7 @@ def plot_mask_dac_fig(mask_dac_df, accuracy_df, fig_name="mask_size_dac", fig_di
 
     fig.suptitle("DAC curve per attribution method for correctly classified images")
     fig.savefig(fig_directory / fig_name, dpi=300, bbox_inches='tight')
+    plt.close()
 
 """
 ------- Test of above code  ----------
@@ -1570,10 +1574,54 @@ mask_dac_df, accuracy_df = format_mask_dac_df(mask_size_tot, dac_tot, pred_hybri
 # fig_name = "mask_size_dac_small"  f"_split_{split}_fold_{fold}_mode_{mode}" + suffix + ".png"
 # plot_mask_dac_fig(mask_dac_df, accuracy_df, fig_name=fig_name, fig_directory=fig_directory, compute_dac=True)
 
+# plot_attr_min_mask_img(VGG_model, dataloader_real_fake, mask_dac_df,
+#                        fig_name="visualize_attribution_min_mask", fig_directory=fig_directory,
+#                        num_img=24, steps=200, head_tail=(1,5), shift=0.7,
+#                        size_closing=10, size_gaussblur=11,
+#                        attr_methods=attr_methods, attr_names=attr_names,
+#                        percentile=98)
 
-plot_attr_min_mask_img(VGG_model, dataloader_real_fake, mask_dac_df,
-                       fig_name="visualize_attribution_min_mask", fig_directory=fig_directory,
-                       num_img=24, steps=200, head_tail=(1,5), shift=0.7, selected_mask=[0, 50, 100],
-                       size_closing=10, size_gaussblur=11,
-                       attr_methods=attr_methods, attr_names=attr_names,
-                       percentile=98)
+# (pl.DataFrame(mask_dac_df)
+#  .with_columns(
+#      pl.col("pred_hybrid").last().over("attr_method","sample").alias("y_real"),
+#      pl.col("pred_hybrid").first().over("attr_method","sample").alias("y_fake")))
+
+# def plot_mask_dac_fig_per_transition(mask_dac_df, accuracy_df, fig_name="mask_size_dac", fig_directory=Path("./figures"), compute_dac=True):
+#     mask_dac_df = mask_dac_df.copy()
+#     mask_dac_df["y_real_1"] = mask_dac_df.groupby(["attr_method", "sample"])["pred_hybrid"].transform("last")
+#     mask_dac_df["y_fake_1"] = mask_dac_df.groupby(["attr_method", "sample"])["pred_hybrid"].transform("first")
+
+#     num_y_real = mask_dac_df["y_real"].unique()
+#     num_y_fake = mask_dac_df["y_fake"].unique()
+#     fig, axis = plt.subplots(len(num_y_real), len(num_y_fake), figsize=(5 * len(num_y_real), 6 * len(num_y_fake)))
+
+#     for i, j in
+
+#     sns.lineplot(data=mask_dac_df, x="steps", y="mask_size", hue="attr_method", ax=axis[0], legend=False)# , estimator='mean', errorbar=None)
+#     axis[0].set_title('Mask Size Against Steps')
+#     axis[0].set_xlabel('Steps')
+#     axis[0].set_ylabel('Mask Size')
+#     axis[0].grid(True)
+
+#     sns.lineplot(data=mask_dac_df, x="mask_size_interp", y="dac_interp", hue="attr_method", ax=axis[1])#, estimator='mean', errorbar=None)
+#     axis[1].set_title('Mask Size Against DAC')
+#     axis[1].set_xlabel('mask_size')
+#     axis[1].set_ylabel('dac')
+#     axis[1].grid(True)
+
+#     if compute_dac:
+#         avg_dac_attr = compute_avg_dac(mask_dac_df)
+#         legend = axis[1].get_legend()
+#         for text in legend.get_texts():
+#             text.set_text(text._text + f" - {avg_dac_attr[text._text]:.3f}")
+#         legend.set_title(legend.get_title()._text + " - DAC score")
+
+#     sns.heatmap(accuracy_df.pivot(index="y_true", columns="y_fake", values="acc_norm"),
+#                 ax=axis[2], annot=True, fmt=".2f", vmin=0, vmax=1)
+#     tot_acc = accuracy_df["acc"].sum() / accuracy_df["count"].sum()
+#     axis[2].set_title(f'Pred accuracy per class and transition - tot_acc: {tot_acc}')
+#     axis[2].set_title(f'Accuracy when real and fake well predicted\ntot_acc: {tot_acc:.3f}')
+
+#     fig.suptitle("DAC curve per attribution method for correctly classified images")
+#     fig.savefig(fig_directory / fig_name, dpi=300, bbox_inches='tight')
+#     plt.close()
