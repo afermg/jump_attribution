@@ -12,6 +12,7 @@ import cv2
 import matplotlib.pyplot as plt
 import numpy as np
 import numpy.typing as npt
+from polars.datatypes import numpy_type_to_constructor
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -1088,7 +1089,7 @@ def plot_attr_min_mask_img(model, dataloader_real_fake, mask_dac_df, fig_name, f
     curr_img = 0
     num_y_ax_per_img = 5 # att, mask, m*x_r, (1-m)*x_c, x_h
     fig, axis = plt.subplots(num_img * num_y_ax_per_img, len(attr_methods) + 2,
-                             figsize=(5 * (len(attr_methods) + 2), 5 * num_img * num_y_ax_per_img)
+                             figsize=(5 * (len(attr_methods) + 2), 5 * num_img * num_y_ax_per_img))
     sample_count = 0
     for X_real, X_fake, y_real, y_fake in dataloader_real_fake:
         X_real, y_real, X_fake, y_fake = X_real.to(device), y_real.to(device), X_fake.to(device), y_fake.to(device)
@@ -1356,18 +1357,32 @@ def dac_curve_computation(model, dataloader_real_fake,
 
 def format_mask_dac_df(mask_size_tot, dac_tot, pred_hybrid_tot, mat_count, mat_acc, save_df=True,
                        file_name_mask_dac='mask_dac_interp_df.csv', file_name_acc='accuracy_df.csv', file_directory="mask_dac_results"):
+    # Convert mat_count and mat_acc to Polars and melt them
+    accuracy_df = (
+        pl.DataFrame(mat_count, schema=[str(i) for i in range(mat_count.shape[1])])
+        .with_columns(y_true=np.arange(mat_count.shape[0]))
+        .melt(id_vars="y_true", variable_name="y_fake", value_name="count")
+        .join(
+           (pl.DataFrame(mat_acc, schema=[str(i) for i in range(mat_acc.shape[1])])
+            .with_columns(y_true=np.arange(mat_acc.shape[0]))
+            .melt(id_vars="y_true", variable_name="y_fake", value_name="acc")),
+           on=["y_true", "y_fake"])
+        .with_columns((pl.col("acc") / pl.col("count")).alias("acc_norm"),
+                      pl.col("y_fake").cast(pl.Int64))
+    )
 
-    accuracy_df = (pd.DataFrame(mat_count).melt(ignore_index=False, value_name="count", var_name="y_fake").reset_index(names="y_true")
-                    .merge(
-                        pd.DataFrame(mat_acc).melt(ignore_index=False, value_name="acc", var_name="y_fake").reset_index(names="y_true"),
-                        on=["y_true", "y_fake"]))
-    accuracy_df = accuracy_df.assign(acc_norm = accuracy_df["acc"] / accuracy_df["count"])
+    # Convert dac_interp_tot dictionary
+    dac_interp_tot = {
+        key: np.array(
+            list(starmap(
+                lambda x, y: np.interp(mask_size_tot[key].mean(axis=0), x, y),
+                zip(mask_size_tot[key], dac_tot[key])
+            ))
+        )
+        for key in dac_tot.keys()
+    }
 
-    dac_interp_tot = {key: np.array(list(starmap(lambda x, y: np.interp(mask_size_tot[key].mean(axis=0), x, y), zip(mask_size_tot[key], dac_tot[key]))))
-                      for key in dac_tot.keys()}
-
-
-    # Define your dictionaries with their associated value names
+    # Define dictionaries with their associated value names
     data_dicts = {
         "pred_hybrid": pred_hybrid_tot,
         "mask_size": mask_size_tot,
@@ -1377,23 +1392,32 @@ def format_mask_dac_df(mask_size_tot, dac_tot, pred_hybrid_tot, mat_count, mat_a
 
     # Process each dictionary and store the melted DataFrames in a list
     dfs = [
-        pd.concat([
-            pd.DataFrame(value)
-            .melt(ignore_index=False, value_name=value_name, var_name="steps")
-            .assign(attr_method=np.prod(value.shape) * [key])
-            .reset_index(names="sample")
-            for key, value in data.items()
-        ])
+        pl.concat(
+            [
+                pl.DataFrame(value, schema=[str(i) for i in range(value.shape[1])])
+                .with_columns(sample=np.arange(value.shape[0]))
+                .melt(id_vars="sample", variable_name="steps", value_name=value_name)
+                .with_columns(
+                    pl.lit(key).alias("attr_method"),
+                    pl.col("steps").cast(pl.Int64)
+                )
+                for key, value in data.items()
+            ])
         for value_name, data in data_dicts.items()
     ]
 
-    # Merge all DataFrames on the common columns
-    mask_dac_df = reduce(lambda left, right: pd.merge(left, right, on=["sample", "steps", "attr_method"]), dfs)
+    # Merging all DataFrames on the common columns in Polars
+    mask_dac_df = dfs[0]
+    for df in dfs[1:]:
+        mask_dac_df = mask_dac_df.join(df, on=["sample", "steps", "attr_method"])
 
-    # Adding the final column
-    mask_dac_df["mask_size_interp"] = mask_dac_df.groupby(["attr_method", "steps"])["mask_size"].transform("mean")
+    mask_dac_df = mask_dac_df.with_columns(
+        pl.col("mask_size").mean().over(["attr_method", "steps"]).alias("mask_size_interp"))
+
+    # Reorder the columns
     column_order = ["attr_method", "sample", "steps", "pred_hybrid", "mask_size", "dac", "mask_size_interp", "dac_interp"]
-    mask_dac_df = mask_dac_df[column_order]
+    mask_dac_df = mask_dac_df.select(column_order)
+
 
     if save_df:
         file_directory = Path(file_directory)
@@ -1401,9 +1425,8 @@ def format_mask_dac_df(mask_size_tot, dac_tot, pred_hybrid_tot, mat_count, mat_a
             file_name_mask_dac += ".csv"
         if file_name_acc[-4:] != ".csv":
             file_name_acc += ".csv"
-
-        mask_dac_df.to_csv(file_directory / file_name_mask_dac, index=False)
-        accuracy_df.to_csv(file_directory / file_name_acc, index=False)
+        mask_dac_df.write_csv(file_directory / file_name_mask_dac)
+        accuracy_df.write_csv(file_directory / file_name_acc)
     return mask_dac_df, accuracy_df
 
 def compute_avg_dac(mask_dac_df):
@@ -1411,24 +1434,24 @@ def compute_avg_dac(mask_dac_df):
     Compute avg dac score per attribution method.
     Opt for a polars computation but a pandas could have been done.
     """
-    avg_dac_attr = (pl.DataFrame(mask_dac_df)
-                                 .sort(by=["attr_method", "sample", "steps"])
-                                 .group_by(["attr_method", "sample"], maintain_order=True).agg(
-                                     pl.map_groups(
-                                         exprs=["dac", "mask_size"],
-                                         function=lambda list_of_series: np.trapz(list_of_series[0], list_of_series[1])
-                                         ).alias("DAC_score"),
-                                     pl.map_groups(
-                                         exprs=["dac_interp", "mask_size_interp"],
-                                         function=lambda list_of_series: np.trapz(list_of_series[0], list_of_series[1])
-                                         ).alias("DAC_score_interp")
-                                 ).group_by("attr_method").agg(pl.col("DAC_score_interp").mean())).to_dict(as_series=False)
+    avg_dac_attr = (mask_dac_df
+                    .sort(by=["attr_method", "sample", "steps"])
+                    .group_by(["attr_method", "sample"], maintain_order=True).agg(
+                        pl.map_groups(
+                            exprs=["dac", "mask_size"],
+                            function=lambda list_of_series: np.trapz(list_of_series[0], list_of_series[1])
+                            ).alias("DAC_score"),
+                        pl.map_groups(
+                            exprs=["dac_interp", "mask_size_interp"],
+                            function=lambda list_of_series: np.trapz(list_of_series[0], list_of_series[1])
+                            ).alias("DAC_score_interp")
+                    ).group_by("attr_method").agg(pl.col("DAC_score_interp").mean())).to_dict(as_series=False)
 
     avg_dac_attr = {key: val for key, val in list(zip(*list(avg_dac_attr.values())))}
     return avg_dac_attr
 
 def compute_id_min_mask(mask_dac_df):
-    id_min_mask_list = (pl.DataFrame(mask_dac_df)
+    id_min_mask_list = (mask_dac_df
             .sort(by=["attr_method", "sample", "steps"])
             .group_by(["attr_method", "sample"], maintain_order=True)
             .agg(pl.col("pred_hybrid"))
@@ -1467,7 +1490,7 @@ def plot_mask_dac_fig(mask_dac_df, accuracy_df, fig_name="mask_size_dac", fig_di
             text.set_text(text._text + f" - {avg_dac_attr[text._text]:.3f}")
         legend.set_title(legend.get_title()._text + " - DAC score")
 
-    sns.heatmap(accuracy_df.pivot(index="y_true", columns="y_fake", values="acc_norm"),
+    sns.heatmap(accuracy_df.to_pandas().pivot(index="y_true", columns="y_fake", values="acc_norm"), #behave better in pandas
                 ax=axis[2], annot=True, fmt=".2f", vmin=0, vmax=1)
     tot_acc = accuracy_df["acc"].sum() / accuracy_df["count"].sum()
     axis[2].set_title(f'Pred accuracy per class and transition - tot_acc: {tot_acc}')
@@ -1547,31 +1570,31 @@ attr_names = ["D_InputXGrad", "IntegratedGradients", "DeepLift", "D_GuidedGradca
 #                    percentile=98)
 
 # Compute DAC curve score of multiple attribution method
-attr_methods = [D_InGrad, IntegratedGradients, DeepLift, D_GuidedGradCam, D_GradCam, Residual_attr, Random_attr][:]
-attr_names = ["D_InputXGrad", "IntegratedGradients", "DeepLift", "D_GuidedGradcam", "D_GradCam", "Residual", "Random"][:]
-mask_size_tot, dac_tot, pred_hybrid_tot, mat_count, mat_acc = dac_curve_computation(VGG_model, dataloader_real_fake,
-                                                                   attr_methods=attr_methods,
-                                                                   attr_names=attr_names,
-                                                                   batch_size_mask=512,
-                                                                   steps=200, shift=0.7, head_tail=(1, 5),
-                                                                   percentile=98,
-                                                                   size_closing=10,
-                                                                   size_gaussblur=11,
-                                                                   early_stop=10, #None,
-                                                                   method_kwargs_dict=None, #{"D_GradCam": {"num_layer": -3}}
-                                                                   attr_kwargs_dict=None)
+# attr_methods = [D_InGrad, IntegratedGradients, DeepLift, D_GuidedGradCam, D_GradCam, Residual_attr, Random_attr][:]
+# attr_names = ["D_InputXGrad", "IntegratedGradients", "DeepLift", "D_GuidedGradcam", "D_GradCam", "Residual", "Random"][:]
+# mask_size_tot, dac_tot, pred_hybrid_tot, mat_count, mat_acc = dac_curve_computation(VGG_model, dataloader_real_fake,
+#                                                                    attr_methods=attr_methods,
+#                                                                    attr_names=attr_names,
+#                                                                    batch_size_mask=512,
+#                                                                    steps=200, shift=0.7, head_tail=(1, 5),
+#                                                                    percentile=98,
+#                                                                    size_closing=10,
+#                                                                    size_gaussblur=11,
+#                                                                    early_stop=10, #None,
+#                                                                    method_kwargs_dict=None, #{"D_GradCam": {"num_layer": -3}}
+#                                                                    attr_kwargs_dict=None)
 
 
 file_name_mask_dac = "mask_dac_df" + f"_split_{split}_fold_{fold}_mode_{mode}" + suffix + ".csv"
 file_name_acc = "accuracy_df" + f"_split_{split}_fold_{fold}_mode_{mode}" + suffix + ".csv"
 
-mask_dac_df, accuracy_df = format_mask_dac_df(mask_size_tot, dac_tot, pred_hybrid_tot, mat_count, mat_acc, save_df=False, #WHETHER TO SAVE FILE
-                                              file_name_mask_dac=file_name_mask_dac,
-                                              file_name_acc=file_name_acc,
-                                              file_directory=Path("mask_dac_results"))
+# mask_dac_df, accuracy_df = format_mask_dac_df(mask_size_tot, dac_tot, pred_hybrid_tot, mat_count, mat_acc, save_df=False, #WHETHER TO SAVE FILE
+#                                               file_name_mask_dac=file_name_mask_dac,
+#                                               file_name_acc=file_name_acc,
+#                                               file_directory=Path("mask_dac_results"))
 
-# mask_dac_df, accuracy_df = pd.read_csv(Path("mask_dac_results") / file_name_mask_dac), pd.read_csv(Path("mask_dac_results") / file_name_acc)
-# fig_name = "mask_size_dac_small"  f"_split_{split}_fold_{fold}_mode_{mode}" + suffix + ".png"
+mask_dac_df, accuracy_df = pl.read_csv(Path("mask_dac_results") / file_name_mask_dac), pl.read_csv(Path("mask_dac_results") / file_name_acc)
+fig_name = "mask_size_dac_bis"  f"_split_{split}_fold_{fold}_mode_{mode}" + suffix + ".png"
 # plot_mask_dac_fig(mask_dac_df, accuracy_df, fig_name=fig_name, fig_directory=fig_directory, compute_dac=True)
 
 # plot_attr_min_mask_img(VGG_model, dataloader_real_fake, mask_dac_df,
@@ -1581,47 +1604,58 @@ mask_dac_df, accuracy_df = format_mask_dac_df(mask_size_tot, dac_tot, pred_hybri
 #                        attr_methods=attr_methods, attr_names=attr_names,
 #                        percentile=98)
 
-# (pl.DataFrame(mask_dac_df)
-#  .with_columns(
-#      pl.col("pred_hybrid").last().over("attr_method","sample").alias("y_real"),
-#      pl.col("pred_hybrid").first().over("attr_method","sample").alias("y_fake")))
+def plot_mask_dac_fig_per_transition(mask_dac_df, accuracy_df, fig_name="dac_curve_per_transition", fig_directory=Path("./figures"), compute_dac=True):
+    mask_dac_class_df = (mask_dac_df
+                   .with_columns(
+                       pl.col("pred_hybrid").last().over("attr_method","sample").alias("y_true"),
+                       pl.col("pred_hybrid").first().over("attr_method","sample").alias("y_fake")))
+    transition = (mask_dac_class_df.select(pl.struct(pl.col("y_true", "y_fake")))
+                  .unique().unnest("y_true").sort(by=["y_true", "y_fake"]).to_numpy())
+    num_x_img = int(np.ceil(np.sqrt(len(transition))))
+    num_y_img = int(np.ceil(len(transition) / num_x_img))
+    fig, axis = plt.subplots(num_x_img, num_y_img, figsize=(5 * num_x_img, 6 * num_x_img))
+    axis = axis.flatten()
 
-# def plot_mask_dac_fig_per_transition(mask_dac_df, accuracy_df, fig_name="mask_size_dac", fig_directory=Path("./figures"), compute_dac=True):
-#     mask_dac_df = mask_dac_df.copy()
-#     mask_dac_df["y_real_1"] = mask_dac_df.groupby(["attr_method", "sample"])["pred_hybrid"].transform("last")
-#     mask_dac_df["y_fake_1"] = mask_dac_df.groupby(["attr_method", "sample"])["pred_hybrid"].transform("first")
+    for num, (i, j) in enumerate(transition):
+        acc = accuracy_df.filter((pl.col("y_true") == i), pl.col("y_fake") == j).select(pl.col("acc_norm")).to_numpy()[0][0]
+        # CAREFUL ! dac_interp and mask_interp has been computted by averaging over a whole attr, not per transtition !
+        # We need to re-comoute them !
 
-#     num_y_real = mask_dac_df["y_real"].unique()
-#     num_y_fake = mask_dac_df["y_fake"].unique()
-#     fig, axis = plt.subplots(len(num_y_real), len(num_y_fake), figsize=(5 * len(num_y_real), 6 * len(num_y_fake)))
+        mask_dac_class_df_sub = mask_dac_class_df.filter((pl.col("y_true") == i) & (pl.col("y_fake") == j))
+        mask_dac_class_df_sub = mask_dac_class_df_sub.with_columns(
+            pl.col("mask_size").mean().over(["attr_method", "steps"]).alias("mask_size_interp_bis"))
+        mask_dac_class_df_sub =(mask_dac_class_df_sub.join(
+            (mask_dac_class_df_sub
+             .sort(by=["attr_method", "sample", "steps"])
+             .group_by(["attr_method", "sample"], maintain_order=True)
+             .agg(
+                 pl.map_groups(
+                     exprs=["mask_size_interp_bis", "mask_size", "dac"],
+                     function=lambda list_of_series: np.interp(list_of_series[0], list_of_series[1], list_of_series[2])
+                     ).alias("dac_interp_bis"),
+                 pl.col("steps"))
+             .explode("dac_interp_bis", "steps")),
+            on=["attr_method", "sample", "steps"]))
 
-#     for i, j in
+        sns.lineplot(data=mask_dac_class_df_sub, x="mask_size_interp_bis", y="dac_interp_bis", hue="attr_method", ax=axis[num])
+        axis[num].set_title(f"$y_{{real}} = {i} \\rightarrow y_{{fake}} = {j}$ - acc: {acc:.2f}")
+        axis[num].set_xlabel('mask_size')
+        axis[num].set_ylabel('dac')
+        axis[num].grid(True)
 
-#     sns.lineplot(data=mask_dac_df, x="steps", y="mask_size", hue="attr_method", ax=axis[0], legend=False)# , estimator='mean', errorbar=None)
-#     axis[0].set_title('Mask Size Against Steps')
-#     axis[0].set_xlabel('Steps')
-#     axis[0].set_ylabel('Mask Size')
-#     axis[0].grid(True)
+        if compute_dac:
+            avg_dac_attr = compute_avg_dac(mask_dac_class_df_sub)
+            legend = axis[num].get_legend()
+            for text in legend.get_texts():
+                text.set_text(text._text + f" - {avg_dac_attr[text._text]:.3f}")
+            legend.set_title(legend.get_title()._text + " - DAC score")
 
-#     sns.lineplot(data=mask_dac_df, x="mask_size_interp", y="dac_interp", hue="attr_method", ax=axis[1])#, estimator='mean', errorbar=None)
-#     axis[1].set_title('Mask Size Against DAC')
-#     axis[1].set_xlabel('mask_size')
-#     axis[1].set_ylabel('dac')
-#     axis[1].grid(True)
+    for i in range(num+1, num_x_img * num_y_img):
+        axis[i].axis("off")
 
-#     if compute_dac:
-#         avg_dac_attr = compute_avg_dac(mask_dac_df)
-#         legend = axis[1].get_legend()
-#         for text in legend.get_texts():
-#             text.set_text(text._text + f" - {avg_dac_attr[text._text]:.3f}")
-#         legend.set_title(legend.get_title()._text + " - DAC score")
+    fig.suptitle("DAC curve per attribution per transition for correctly classified images")
+    fig.savefig(fig_directory / fig_name, dpi=300, bbox_inches='tight')
+    plt.close()
 
-#     sns.heatmap(accuracy_df.pivot(index="y_true", columns="y_fake", values="acc_norm"),
-#                 ax=axis[2], annot=True, fmt=".2f", vmin=0, vmax=1)
-#     tot_acc = accuracy_df["acc"].sum() / accuracy_df["count"].sum()
-#     axis[2].set_title(f'Pred accuracy per class and transition - tot_acc: {tot_acc}')
-#     axis[2].set_title(f'Accuracy when real and fake well predicted\ntot_acc: {tot_acc:.3f}')
-
-#     fig.suptitle("DAC curve per attribution method for correctly classified images")
-#     fig.savefig(fig_directory / fig_name, dpi=300, bbox_inches='tight')
-#     plt.close()
+fig_name = "mask_size_dac_per_transition"  f"_split_{split}_fold_{fold}_mode_{mode}" + suffix + ".png"
+plot_mask_dac_fig_per_transition(mask_dac_df, accuracy_df, fig_name=fig_name, fig_directory=fig_directory, compute_dac=True)
