@@ -897,6 +897,7 @@ def visualize_attribution_mask(attributions, mask_weight, mask_size,
 
 def visualize_attribution_min_mask(attributions, mask_weights, mask_sizes,
                                    X_real, X_fake, y_real, y_fake, y_hat_real, y_hat_fake,
+                                   real_baseline=True,
                                    method_names=None,
                                    fig=None, axes=None):
     # Ensure X_real and X_fake are in channel-last format for plotting
@@ -935,9 +936,14 @@ def visualize_attribution_min_mask(attributions, mask_weights, mask_sizes,
         if i == 0:
             axes[3][i + 2].set_title("$m * X_{fake}$")
         # X_hybrid
-        axes[4][i + 2].imshow(mask_weight * X_real + (1 - mask_weight) * X_fake)
-        if i == 0:
-            axes[4][i + 2].set_title("$X_{hybrid} = m * X_{real} + (1 - m) * X_{fake}$")
+        if real_baseline:
+            axes[4][i + 2].imshow(mask_weight * X_real + (1 - mask_weight) * X_fake)
+            if i == 0:
+                axes[4][i + 2].set_title("$X_{hybrid} = m * X_{real} + (1 - m) * X_{fake}$")
+        else:
+            axes[4][i + 2].imshow(mask_weight * X_fake + (1 - mask_weight) * X_real)
+            if i == 0:
+                axes[4][i + 2].set_title("$X_{hybrid} = m * X_{fake} + (1 - m) * X_{real}$")
 
     # Add color bar for the attribution maps
     cbar = fig.colorbar(im, ax=axes[0,-1], orientation='vertical', fraction=0.05, pad=0.05)
@@ -953,6 +959,7 @@ def plot_attr_img(model, dataloader_real_fake, fig_name, fig_directory=Path("./f
                   attr_methods=[D_InGrad, IntegratedGradients, DeepLift, D_GuidedGradCam, D_GradCam],
                   attr_names=["D_InputXGrad", "IntegratedGradients", "DeepLift", "D_GuidedGradcam", "D_GradCam"],
                   percentile=98,
+                  real_baseline=True,
                   method_kwargs_dict=None,
                   attr_kwargs_dict=None):
 
@@ -972,9 +979,14 @@ def plot_attr_img(model, dataloader_real_fake, fig_name, fig_directory=Path("./f
         attributions = []
         for attr_name, attr_method in zip(attr_names, attr_methods):
             # add method_kwargs, or attr_kwargs depending on the method, # method_kwargs={"num_layer": -3})
-            attr_batch = Attribution(model, attr_method, X_fake, X_real, y_fake,
-                                     method_kwargs=method_kwargs_dict[attr_name],
-                                     attr_kwargs=attr_kwargs_dict[attr_name])
+            if real_baseline: #whether to use real as a baseline or fake image
+                attr_batch = Attribution(model, attr_method, X_fake, X_real, y_fake,
+                                         method_kwargs=method_kwargs_dict[attr_name],
+                                         attr_kwargs=attr_kwargs_dict[attr_name])
+            else:
+                attr_batch = Attribution(model, attr_method, X_real, X_fake, y_real,
+                                         method_kwargs=method_kwargs_dict[attr_name],
+                                         attr_kwargs=attr_kwargs_dict[attr_name])
 
             attr_batch = normalize_attribution(attr_batch, percentile=percentile).detach().cpu().numpy()
             attributions.append(attr_batch)
@@ -993,6 +1005,8 @@ def plot_attr_img(model, dataloader_real_fake, fig_name, fig_directory=Path("./f
         if curr_img == num_img:
             break
     fig_directory = Path(fig_directory) #just in case formatting hasnt been done
+    baseline_used = "$X_{real}$" if real_baseline else "$X_{fake}$"
+    fig.suptitle("Saliency map for each attribution method using " + baseline_used + " as a baseline.")
     fig.savefig(fig_directory / fig_name)
     plt.close()
 
@@ -1002,6 +1016,7 @@ def plot_attr_mask_img(model, dataloader_real_fake, fig_name, fig_directory=Path
                        attr_methods=[D_InGrad, IntegratedGradients, DeepLift, D_GuidedGradCam, D_GradCam],
                        attr_names=["D_InputXGrad", "IntegratedGradients", "DeepLift", "D_GuidedGradcam", "D_GradCam"],
                        percentile=98,
+                       real_baseline=True,
                        method_kwargs_dict=None,
                        attr_kwargs_dict=None):
 
@@ -1031,9 +1046,14 @@ def plot_attr_mask_img(model, dataloader_real_fake, fig_name, fig_directory=Path
         mask_size_selected = []
         for attr_name, attr_method in zip(attr_names, attr_methods):
             # add method_kwargs, or attr_kwargs depending on the method, # method_kwargs={"num_layer": -3})
-            attr_batch = Attribution(model, attr_method, X_fake, X_real, y_fake,
-                                     method_kwargs=method_kwargs_dict[attr_name],
-                                     attr_kwargs=attr_kwargs_dict[attr_name])
+            if real_baseline: #whether to use real as a baseline or fake image
+                attr_batch = Attribution(model, attr_method, X_fake, X_real, y_fake,
+                                         method_kwargs=method_kwargs_dict[attr_name],
+                                         attr_kwargs=attr_kwargs_dict[attr_name])
+            else:
+                attr_batch = Attribution(model, attr_method, X_real, X_fake, y_real,
+                                         method_kwargs=method_kwargs_dict[attr_name],
+                                         attr_kwargs=attr_kwargs_dict[attr_name])
 
             attr_batch = normalize_attribution(attr_batch, percentile=percentile)
             attributions.append(attr_batch.cpu().numpy())
@@ -1062,19 +1082,23 @@ def plot_attr_mask_img(model, dataloader_real_fake, fig_name, fig_directory=Path
         if curr_img == num_img:
             break
     fig_directory = Path(fig_directory) #just in case formatting hasnt been done
+    baseline_used = "$X_{real}$" if real_baseline else "$X_{fake}$"
+    fig.suptitle("Attribution mask for each attribution method using " + baseline_used + " as a baseline.")
     fig.savefig(fig_directory / fig_name)
     plt.close()
 
 
 
 def plot_attr_min_mask_img(model, dataloader_real_fake, mask_dac_df, fig_name, fig_directory=Path("./figures"), num_img=24,
-                       steps=200, head_tail=(1,5), shift=0.7,
-                       size_closing=10, size_gaussblur=11,
-                       attr_methods=[D_InGrad, IntegratedGradients, DeepLift, D_GuidedGradCam, D_GradCam],
-                       attr_names=["D_InputXGrad", "IntegratedGradients", "DeepLift", "D_GuidedGradcam", "D_GradCam"],
-                       percentile=98,
-                       method_kwargs_dict=None,
-                       attr_kwargs_dict=None):
+                           steps=200, head_tail=(1,5), shift=0.7,
+                           size_closing=10, size_gaussblur=11,
+                           attr_methods=[D_InGrad, IntegratedGradients, DeepLift, D_GuidedGradCam, D_GradCam],
+                           attr_names=["D_InputXGrad", "IntegratedGradients", "DeepLift", "D_GuidedGradcam", "D_GradCam"],
+                           percentile=98,
+                           real_baseline=True,
+                           method_kwargs_dict=None,
+                           attr_kwargs_dict=None):
+
     id_min_mask_dict = compute_id_min_mask(mask_dac_df)
     method_kwargs_dict = build_kwargs_dict(attr_names=attr_names, kwargs_dict=method_kwargs_dict)
     attr_kwargs_dict = build_kwargs_dict(attr_names=attr_names, kwargs_dict=attr_kwargs_dict)
@@ -1121,9 +1145,14 @@ def plot_attr_min_mask_img(model, dataloader_real_fake, mask_dac_df, fig_name, f
         sample_count += X_real.shape[0] # update for next passage
         for attr_name, attr_method in zip(attr_names, attr_methods):
             # add method_kwargs, or attr_kwargs depending on the method, # method_kwargs={"num_layer": -3})
-            attr_batch = Attribution(model, attr_method, X_fake, X_real, y_fake,
-                                     method_kwargs=method_kwargs_dict[attr_name],
-                                     attr_kwargs=attr_kwargs_dict[attr_name])
+            if real_baseline: #whether to use real as a baseline or fake image
+                attr_batch = Attribution(model, attr_method, X_fake, X_real, y_fake,
+                                         method_kwargs=method_kwargs_dict[attr_name],
+                                         attr_kwargs=attr_kwargs_dict[attr_name])
+            else:
+                attr_batch = Attribution(model, attr_method, X_real, X_fake, y_real,
+                                         method_kwargs=method_kwargs_dict[attr_name],
+                                         attr_kwargs=attr_kwargs_dict[attr_name])
 
             attr_batch = normalize_attribution(attr_batch, percentile=percentile)
             attributions.append(attr_batch.cpu().numpy())
@@ -1149,6 +1178,7 @@ def plot_attr_min_mask_img(model, dataloader_real_fake, mask_dac_df, fig_name, f
                                                     y_real[i].detach().cpu().numpy(), y_fake[i].detach().cpu().numpy(),
                                                     y_hat_real[i].detach().cpu().numpy(), y_hat_fake[i].detach().cpu().numpy(),
                                                     attr_names,
+                                                    real_baseline,
                                                     fig,
                                                     axis[num_y_ax_per_img * curr_img: num_y_ax_per_img * curr_img + num_y_ax_per_img,:])
             curr_img += 1
@@ -1157,8 +1187,11 @@ def plot_attr_min_mask_img(model, dataloader_real_fake, mask_dac_df, fig_name, f
         if curr_img == num_img:
             break
     fig_directory = Path(fig_directory) #just in case formatting hasnt been done
+    baseline_used = "$X_{real}$" if real_baseline else "$X_{fake}$"
+    fig.suptitle("Min mask for each attribution method using " + baseline_used + " as a baseline.")
     fig.savefig(fig_directory / fig_name)
     plt.close()
+
 """
 ------- Mask creation and DAC score --------
 """
@@ -1243,6 +1276,7 @@ def dac_curve_computation(model, dataloader_real_fake,
                           size_closing=10,
                           size_gaussblur=11,
                           early_stop: Optional[int]=None,
+                          real_baseline=True,
                           method_kwargs_dict=None,
                           attr_kwargs_dict=None):
 
@@ -1317,13 +1351,16 @@ def dac_curve_computation(model, dataloader_real_fake,
         X_real.requires_grad, X_fake.requires_grad = True, True
         for attr_name, attr_method in zip(attr_names, attr_methods):
             # add method_kwargs, or attr_kwargs depending on the method, # method_kwargs={"num_layer": -3})
-            attr_batch = Attribution(model, attr_method, X_fake, X_real, y_fake,
-                                     method_kwargs=method_kwargs_dict[attr_name],
-                                     attr_kwargs=attr_kwargs_dict[attr_name])
+            if real_baseline: #whether to use real as a baseline or fake image
+                attr_batch = Attribution(model, attr_method, X_fake, X_real, y_fake,
+                                         method_kwargs=method_kwargs_dict[attr_name],
+                                         attr_kwargs=attr_kwargs_dict[attr_name])
+            else:
+                attr_batch = Attribution(model, attr_method, X_real, X_fake, y_real,
+                                         method_kwargs=method_kwargs_dict[attr_name],
+                                         attr_kwargs=attr_kwargs_dict[attr_name])
             attr_batch = normalize_attribution(attr_batch, percentile=percentile)
             mask_binary_closed_all, mask_weight_all = get_batch_process_mask(attr_batch, splitting_point, kernel, size_gaussblur)
-            # mask_binary_closed_all = np.insert(mask_binary_closed_all, 0, np.zeros(mask_binary_closed_all.shape[-2:]) ,axis=1)
-            # mask_weight_all = np.insert(mask_weight_all, 0, np.zeros(mask_weight_all.shape[-2:]) ,axis=1)
             mask_weight_all_split = np.array_split(mask_weight_all,
                                                    np.arange(0, mask_weight_all.shape[1], batch_size_mask // mask_weight_all.shape[0]),
                                                    axis=1)[1:]
@@ -1332,10 +1369,15 @@ def dac_curve_computation(model, dataloader_real_fake,
             with torch.no_grad():
                 for mask_weight in mask_weight_all_split:
                     mask_weight = torch.tensor(mask_weight).to(device).unsqueeze(-3)
-                    X_hybrid = ((1 - mask_weight) * X_fake.unsqueeze(1) + mask_weight * X_real.unsqueeze(1)).view(-1, *X_real.shape[-3:])
+                    if real_baseline:
+                        X_hybrid = ((1 - mask_weight) * X_fake.unsqueeze(1) + mask_weight * X_real.unsqueeze(1)).view(-1, *X_real.shape[-3:])
+                        y_hat_hybrid_log = F.softmax(model(X_hybrid), dim=1).view(*mask_weight.shape[:2], -1)
+                        dac_batch.append((y_hat_hybrid_log[np.arange(len(y_real)), :, y_real] - y_hat_fake_log[np.arange(len(y_real)), y_real].unsqueeze(1)).cpu().numpy())
+                    else:
+                        X_hybrid = ((1 - mask_weight) * X_real.unsqueeze(1) + mask_weight * X_fake.unsqueeze(1)).view(-1, *X_fake.shape[-3:])
+                        y_hat_hybrid_log = F.softmax(model(X_hybrid), dim=1).view(*mask_weight.shape[:2], -1)
+                        dac_batch.append((y_hat_hybrid_log[np.arange(len(y_fake)), :, y_fake] - y_hat_real_log[np.arange(len(y_fake)), y_fake].unsqueeze(1)).cpu().numpy())
 
-                    y_hat_hybrid_log = F.softmax(model(X_hybrid), dim=1).view(*mask_weight.shape[:2], -1)
-                    dac_batch.append((y_hat_hybrid_log[np.arange(len(y_real)), :, y_real] - y_hat_fake_log[np.arange(len(y_real)), y_real].unsqueeze(1)).cpu().numpy())
                     pred_hybrid_batch.append(y_hat_hybrid_log.argmax(dim=-1).cpu().numpy())
                 # free up memory
                 del mask_weight, X_hybrid, y_hat_hybrid_log
@@ -1348,7 +1390,6 @@ def dac_curve_computation(model, dataloader_real_fake,
             count += 1
             if count == early_stop:
                 break
-
     mask_size_tot = {key: np.vstack(value) for key, value in mask_size_tot.items()}
     dac_tot = {key: np.vstack(value) for key, value in dac_tot.items()}
     pred_hybrid_tot = {key: np.vstack(value) for key, value in pred_hybrid_tot.items()}
@@ -1360,13 +1401,13 @@ def format_mask_dac_df(mask_size_tot, dac_tot, pred_hybrid_tot, mat_count, mat_a
     # Convert mat_count and mat_acc to Polars and melt them
     accuracy_df = (
         pl.DataFrame(mat_count, schema=[str(i) for i in range(mat_count.shape[1])])
-        .with_columns(y_true=np.arange(mat_count.shape[0]))
-        .melt(id_vars="y_true", variable_name="y_fake", value_name="count")
+        .with_columns(y_real=np.arange(mat_count.shape[0]))
+        .melt(id_vars="y_real", variable_name="y_fake", value_name="count")
         .join(
            (pl.DataFrame(mat_acc, schema=[str(i) for i in range(mat_acc.shape[1])])
-            .with_columns(y_true=np.arange(mat_acc.shape[0]))
-            .melt(id_vars="y_true", variable_name="y_fake", value_name="acc")),
-           on=["y_true", "y_fake"])
+            .with_columns(y_real=np.arange(mat_acc.shape[0]))
+            .melt(id_vars="y_real", variable_name="y_fake", value_name="acc")),
+           on=["y_real", "y_fake"])
         .with_columns((pl.col("acc") / pl.col("count")).alias("acc_norm"),
                       pl.col("y_fake").cast(pl.Int64))
     )
@@ -1500,6 +1541,65 @@ def plot_mask_dac_fig(mask_dac_df, accuracy_df, fig_name="mask_size_dac", fig_di
     fig.savefig(fig_directory / fig_name, dpi=300, bbox_inches='tight')
     plt.close()
 
+
+def plot_mask_dac_fig_per_transition(mask_dac_df, accuracy_df, real_baseline=True, fig_name="dac_curve_per_transition", fig_directory=Path("./figures"), compute_dac=True):
+    if real_baseline: # if the real baseline is used, then when mask=0 Xhybrid = Xc. and mask=1 Xhybrid = Xr
+        mask_dac_class_df = (mask_dac_df
+                       .with_columns(
+                           pl.col("pred_hybrid").last().over("attr_method","sample").alias("y_real"),
+                           pl.col("pred_hybrid").first().over("attr_method","sample").alias("y_fake")))
+    else: # this is the other way around in the opposite case.
+        mask_dac_class_df = (mask_dac_df
+                       .with_columns(
+                           pl.col("pred_hybrid").first().over("attr_method","sample").alias("y_real"),
+                           pl.col("pred_hybrid").last().over("attr_method","sample").alias("y_fake")))
+    transition = (mask_dac_class_df.select(pl.struct(pl.col("y_real", "y_fake")))
+                  .unique().unnest("y_real").sort(by=["y_real", "y_fake"]).to_numpy())
+    num_x_img = int(np.ceil(np.sqrt(len(transition))))
+    num_y_img = int(np.ceil(len(transition) / num_x_img))
+    fig, axis = plt.subplots(num_x_img, num_y_img, figsize=(5 * num_x_img, 6 * num_x_img))
+    axis = axis.flatten()
+
+    for num, (i, j) in enumerate(transition):
+        acc = accuracy_df.filter((pl.col("y_real") == i), pl.col("y_fake") == j).select(pl.col("acc_norm")).to_numpy()[0][0]
+        # CAREFUL ! dac_interp and mask_interp has been computted by averaging over a whole attr, not per transtition !
+        # We need to re-comoute them !
+
+        mask_dac_class_df_sub = mask_dac_class_df.filter((pl.col("y_real") == i) & (pl.col("y_fake") == j))
+        mask_dac_class_df_sub = mask_dac_class_df_sub.with_columns(
+            pl.col("mask_size").mean().over(["attr_method", "steps"]).alias("mask_size_interp_bis"))
+        mask_dac_class_df_sub =(mask_dac_class_df_sub.join(
+            (mask_dac_class_df_sub
+             .sort(by=["attr_method", "sample", "steps"])
+             .group_by(["attr_method", "sample"], maintain_order=True)
+             .agg(
+                 pl.map_groups(
+                     exprs=["mask_size_interp_bis", "mask_size", "dac"],
+                     function=lambda list_of_series: np.interp(list_of_series[0], list_of_series[1], list_of_series[2])
+                     ).alias("dac_interp_bis"),
+                 pl.col("steps"))
+             .explode("dac_interp_bis", "steps")),
+            on=["attr_method", "sample", "steps"]))
+
+        sns.lineplot(data=mask_dac_class_df_sub, x="mask_size_interp_bis", y="dac_interp_bis", hue="attr_method", ax=axis[num])
+        axis[num].set_title(f"$y_{{real}} = {i} \\rightarrow y_{{fake}} = {j}$ - acc: {acc:.2f}")
+        axis[num].set_xlabel('mask_size')
+        axis[num].set_ylabel('dac')
+        axis[num].grid(True)
+
+        if compute_dac:
+            avg_dac_attr = compute_avg_dac(mask_dac_class_df_sub)
+            legend = axis[num].get_legend()
+            for text in legend.get_texts():
+                text.set_text(text._text + f" - {avg_dac_attr[text._text]:.3f}")
+            legend.set_title(legend.get_title()._text + " - DAC score")
+
+    for i in range(num+1, num_x_img * num_y_img):
+        axis[i].axis("off")
+
+    fig.suptitle("DAC curve per attribution per transition for correctly classified images")
+    fig.savefig(fig_directory / fig_name, dpi=300, bbox_inches='tight')
+    plt.close()
 """
 ------- Test of above code  ----------
 """
@@ -1604,58 +1704,5 @@ fig_name = "mask_size_dac_bis"  f"_split_{split}_fold_{fold}_mode_{mode}" + suff
 #                        attr_methods=attr_methods, attr_names=attr_names,
 #                        percentile=98)
 
-def plot_mask_dac_fig_per_transition(mask_dac_df, accuracy_df, fig_name="dac_curve_per_transition", fig_directory=Path("./figures"), compute_dac=True):
-    mask_dac_class_df = (mask_dac_df
-                   .with_columns(
-                       pl.col("pred_hybrid").last().over("attr_method","sample").alias("y_true"),
-                       pl.col("pred_hybrid").first().over("attr_method","sample").alias("y_fake")))
-    transition = (mask_dac_class_df.select(pl.struct(pl.col("y_true", "y_fake")))
-                  .unique().unnest("y_true").sort(by=["y_true", "y_fake"]).to_numpy())
-    num_x_img = int(np.ceil(np.sqrt(len(transition))))
-    num_y_img = int(np.ceil(len(transition) / num_x_img))
-    fig, axis = plt.subplots(num_x_img, num_y_img, figsize=(5 * num_x_img, 6 * num_x_img))
-    axis = axis.flatten()
-
-    for num, (i, j) in enumerate(transition):
-        acc = accuracy_df.filter((pl.col("y_true") == i), pl.col("y_fake") == j).select(pl.col("acc_norm")).to_numpy()[0][0]
-        # CAREFUL ! dac_interp and mask_interp has been computted by averaging over a whole attr, not per transtition !
-        # We need to re-comoute them !
-
-        mask_dac_class_df_sub = mask_dac_class_df.filter((pl.col("y_true") == i) & (pl.col("y_fake") == j))
-        mask_dac_class_df_sub = mask_dac_class_df_sub.with_columns(
-            pl.col("mask_size").mean().over(["attr_method", "steps"]).alias("mask_size_interp_bis"))
-        mask_dac_class_df_sub =(mask_dac_class_df_sub.join(
-            (mask_dac_class_df_sub
-             .sort(by=["attr_method", "sample", "steps"])
-             .group_by(["attr_method", "sample"], maintain_order=True)
-             .agg(
-                 pl.map_groups(
-                     exprs=["mask_size_interp_bis", "mask_size", "dac"],
-                     function=lambda list_of_series: np.interp(list_of_series[0], list_of_series[1], list_of_series[2])
-                     ).alias("dac_interp_bis"),
-                 pl.col("steps"))
-             .explode("dac_interp_bis", "steps")),
-            on=["attr_method", "sample", "steps"]))
-
-        sns.lineplot(data=mask_dac_class_df_sub, x="mask_size_interp_bis", y="dac_interp_bis", hue="attr_method", ax=axis[num])
-        axis[num].set_title(f"$y_{{real}} = {i} \\rightarrow y_{{fake}} = {j}$ - acc: {acc:.2f}")
-        axis[num].set_xlabel('mask_size')
-        axis[num].set_ylabel('dac')
-        axis[num].grid(True)
-
-        if compute_dac:
-            avg_dac_attr = compute_avg_dac(mask_dac_class_df_sub)
-            legend = axis[num].get_legend()
-            for text in legend.get_texts():
-                text.set_text(text._text + f" - {avg_dac_attr[text._text]:.3f}")
-            legend.set_title(legend.get_title()._text + " - DAC score")
-
-    for i in range(num+1, num_x_img * num_y_img):
-        axis[i].axis("off")
-
-    fig.suptitle("DAC curve per attribution per transition for correctly classified images")
-    fig.savefig(fig_directory / fig_name, dpi=300, bbox_inches='tight')
-    plt.close()
-
-fig_name = "mask_size_dac_per_transition"  f"_split_{split}_fold_{fold}_mode_{mode}" + suffix + ".png"
-plot_mask_dac_fig_per_transition(mask_dac_df, accuracy_df, fig_name=fig_name, fig_directory=fig_directory, compute_dac=True)
+# fig_name = "mask_size_dac_per_transition"  f"_split_{split}_fold_{fold}_mode_{mode}" + suffix + ".png"
+# plot_mask_dac_fig_per_transition(mask_dac_df, accuracy_df, fig_name=fig_name, fig_directory=fig_directory, compute_dac=True)
