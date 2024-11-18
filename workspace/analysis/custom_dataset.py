@@ -12,8 +12,8 @@ class ImageDataset(Dataset):
         self.imgs_path = imgs_path
         self.channel = channel
         self.fold_idx = fold_idx
-        if self.fold_index is None:
-            self.fold_index = np.arange(len(self.imgs_zarr["labels"]))
+        if self.fold_idx is None:
+            self.fold_idx = np.arange(len(self.imgs_zarr["labels"]))
         self.img_transform = img_transform
         self.label_transform = label_transform
 
@@ -36,8 +36,8 @@ class ImageDataset_all_info(Dataset):
         self.imgs_path = imgs_path
         self.channel = channel
         self.fold_idx = fold_idx
-        if self.fold_index is None:
-            self.fold_index = np.arange(len(self.imgs_zarr["labels"]))
+        if self.fold_idx is None:
+            self.fold_idx = np.arange(len(self.imgs_zarr["labels"]))
         self.img_transform = img_transform
         self.label_transform = label_transform
 
@@ -62,8 +62,8 @@ class ImageDataset_Ref(Dataset):
         self.imgs_path = imgs_path
         self.channel = channel
         self.fold_idx = fold_idx
-        if self.fold_index is None:
-            self.fold_index = np.arange(len(self.imgs_zarr["labels"]))
+        if self.fold_idx is None:
+            self.fold_idx = np.arange(len(self.imgs_zarr["labels"]))
         self.imgs_idx, self.imgs2_idx = self._make_dataset(seed)
         self.img_transform = img_transform
         self.label_transform = label_transform
