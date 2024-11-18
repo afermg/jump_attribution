@@ -12,6 +12,8 @@ class ImageDataset(Dataset):
         self.imgs_path = imgs_path
         self.channel = channel
         self.fold_idx = fold_idx
+        if self.fold_index is None:
+            self.fold_index = np.arange(len(self.imgs_zarr["labels"]))
         self.img_transform = img_transform
         self.label_transform = label_transform
 
@@ -34,6 +36,8 @@ class ImageDataset_all_info(Dataset):
         self.imgs_path = imgs_path
         self.channel = channel
         self.fold_idx = fold_idx
+        if self.fold_index is None:
+            self.fold_index = np.arange(len(self.imgs_zarr["labels"]))
         self.img_transform = img_transform
         self.label_transform = label_transform
 
@@ -58,6 +62,8 @@ class ImageDataset_Ref(Dataset):
         self.imgs_path = imgs_path
         self.channel = channel
         self.fold_idx = fold_idx
+        if self.fold_index is None:
+            self.fold_index = np.arange(len(self.imgs_zarr["labels"]))
         self.imgs_idx, self.imgs2_idx = self._make_dataset(seed)
         self.img_transform = img_transform
         self.label_transform = label_transform
@@ -66,7 +72,7 @@ class ImageDataset_Ref(Dataset):
         labels = self.imgs_zarr["labels"].oindex[self.fold_idx]
         domain_idx = sorted(zip(self.fold_idx, labels), key=lambda x: x[1])
         domain_idx = {k: np.array(list(zip(*g))[0]) for k, g in groupby(domain_idx,  key=lambda x:x[1])}
-        rng = np.random.default_rng(42)
+        rng = np.random.default_rng(seed)
         return list(map(lambda list_idx: np.concatenate(list_idx),
                         list(zip(*[(group_idx,
                                     rng.choice(group_idx, size=len(group_idx), replace=False))
