@@ -27,6 +27,9 @@
                 pkgs.stdenv.cc.cc
                 pkgs.libGL
                 pkgs.glib
+                pkgs.ruff
+                pkgs.isort
+                pkgs.ruff-lsp
               ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux (with mpkgs.cudaPackages; [
                 libcublas
                 libcurand
@@ -34,7 +37,6 @@
                 libcufft
                 cuda_cudart
                 cuda_nvrtc
-
                 # This is required for most app that uses graphics api
                 pkgs.linuxPackages.nvidia_x11
               ]);
@@ -48,6 +50,7 @@
                   pp.torch
                   pp.torchvision
                   pp.scikit-image
+                  # pp.isort
                 ]));
               in mkShell {
                     NIX_LD = runCommand "ld.so" {} ''
@@ -58,7 +61,6 @@
                       python_with_pkgs
                       python311Packages.venvShellHook
                       uv
-                      # python311Packages.ruff-lsp
                     ]
                     ++ libList; 
                     venvDir = "./.venv";
@@ -72,7 +74,6 @@
                         export LD_LIBRARY_PATH=$NIX_LD_LIBRARY_PATH:$LD_LIBRARY_PATH
                         export PYTHON_KEYRING_BACKEND=keyring.backends.fail.Keyring
                         runHook venvShellHook
-                        ln -sf ${ruff}/bin/ruff .venv/bin/ruff
                         uv pip sync requirements.txt
                         export PYTHONPATH=${python_with_pkgs}/${python_with_pkgs.sitePackages}:$PYTHONPATH
                     '';
@@ -81,3 +82,6 @@
         }
       );
 }
+
+                        # ln -sf ${pkgs.ruff}/bin/ruff .venv/bin/ruff
+                        # ln -sf ${pkgs.isort}/bin/isort .venv/bin/isort
