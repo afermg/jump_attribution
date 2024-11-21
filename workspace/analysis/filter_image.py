@@ -1,23 +1,21 @@
 #!/usr/bin/env python3
-import itertools
-from collections.abc import Callable, Iterable
+from collections.abc import Callable
 from itertools import groupby, product, starmap
 from pathlib import Path
 from typing import List
 
+import matplotlib.colors as mcolors
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import numcodecs
 import numpy as np
 import polars as pl
-import seaborn as sns
-import skimage.measure
-import torch
 import zarr
 from jump_portrait.fetch import get_jump_image
 from jump_portrait.utils import batch_processing, parallel
 from matplotlib import colors
-from more_itertools import unzip
+# import skimage.measure
+from skimage.util.shape import view_as_windows
 from torchvision.transforms import v2
 
 import custom_dataset
@@ -115,7 +113,7 @@ def get_jump_image_batch(
         channel: list[str],
         site: list[str],
         correction: str='Orig',
-        verbose: bool=True,
+        # verbose: bool=True,
 ) -> tuple[list[tuple], list[np.ndarray]]:
     '''
     Load jump image associated to metadata in a threaded fashion.
@@ -145,82 +143,122 @@ def get_jump_image_batch(
 
     '''
     iterable = list(starmap(lambda *x: (*x[0], *x[1:]), product(metadata.rows(), channel, site, [correction])))
-    img_list = parallel(iterable, batch_processing(try_function(get_jump_image)),
-                        verbose=verbose)
+    img_list = parallel(iterable, batch_processing(try_function(get_jump_image)))
+                        # verbose=verbose)
 
     return iterable, img_list
 
-if not os.path.exists(Path("image_active_dataset/imgs_labels_groups.zarr")):
-    channel = ['AGP', 'DNA', 'ER', 'Mito', 'RNA']
-    features_pre, work_fail = get_jump_image_iter(metadata_pre.select(pl.col(["Metadata_Source", "Metadata_Batch",
-                                                                              "Metadata_Plate", "Metadata_Well"])),
-                                                  channel=channel,#, 'ER', 'AGP', 'Mito', 'RNA'],
-                                                  site=[str(i) for i in range(1, 7)],
-                                                  correction=None) #None, 'Illum'
+# if not os.path.exists(Path("image_active_dataset/imgs_labels_groups.zarr")):
+
+channel = ['AGP', 'DNA']#, 'ER', 'Mito', 'RNA']
+iterable, img_list = get_jump_image_batch(metadata.select(pl.col(["Metadata_Source", "Metadata_Batch",
+                                                                       "Metadata_Plate", "Metadata_Well"])),
+                                          channel=channel,#, 'ER', 'AGP', 'Mito', 'RNA'],
+                                          site=["1", "2"],#[str(i) for i in range(1, 7)],
+                                          correction=None) #None, 'Illum'
+mask = [x is not None for x in img_list]
+iterable_mask, img_list_mask = [it for i, it in enumerate(iterable) if mask[i]],  [img for i, img in enumerate(img_list) if mask[i]]
+
+zip_iter_img = sorted(zip(iterable_mask, img_list_mask),
+                      key=lambda x: (x[0][0], x[0][1], x[0][2], x[0][3], x[0][5], x[0][4]))
+# grouped image are returned as the common key, and then the zip of param and img, so we retrieve the img then we stack
+iterable_stack, img_list_stack = map(lambda tup: list(tup),
+                                zip(*starmap(lambda key, param_img: (key, np.stack(list(map(lambda x: x[1], param_img)))),
+                                             groupby(zip_iter_img,
+                                                     key=lambda x: (x[0][0], x[0][1], x[0][2], x[0][3], x[0][5])))))
+
+# retrieve moa_id and InChIKey
+labels, groups = tuple((metadata
+        .select(pl.col(["Metadata_Source", "Metadata_Batch", "Metadata_Plate", "Metadata_Well", "moa_id", "Metadata_InChIKey"]))
+        .join(pl.DataFrame([t[:4] for t in iterable_stack],
+                           schema=["Metadata_Source", "Metadata_Batch", "Metadata_Plate", "Metadata_Well"]),
+              on=["Metadata_Source", "Metadata_Batch", "Metadata_Plate", "Metadata_Well"],
+              how="left")
+        .select(pl.col(["moa_id", "Metadata_InChIKey"]))
+        .to_dict(as_series=False)
+        .values()))
+
+# crop img in small square
+list_shape = np.array(list(map(lambda x: min(*x.shape[-2:]), img_list_stack)))
+wanted_crop = 128
+num_crop = 8 #int(np.round(np.median(list_shape/ wanted_crop)))
+
+def window_step(img, window_length, window_num):
+    length = min(*img.shape[-2:])
+    return (length - window_length) // (window_num -1)
+
+img_stack_window = np.vstack(list(map(
+    lambda img: view_as_windows(img,
+                                (img.shape[-3], wanted_crop, wanted_crop),
+                                window_step(img, wanted_crop, num_crop)),
+    img_list_stack)))
+
+pixel_window =  sum(list(map(np.size,  img_stack_window)))
+pixel_origin = sum(list(map(np.size,  img_list_stack)))
+print(f"pixel increase due to overlapping window: {(pixel_window - pixel_origin) / pixel_origin:.2%}")
+
+# clip image
+# axis of img_stack_window = (sample, row_grid, column_grid, channel, H, W)
+clip = (1, 99)
+min_clip_img, max_clip_img = np.percentile(img_stack_window, clip, axis=(1, 2, 4, 5), keepdims=True)
+img_stack_window_norm = np.clip(img_stack_window,
+                                min_clip_img,
+                                max_clip_img)
+img_stack_window_norm = (img_stack_window_norm - min_clip_img) / (max_clip_img - min_clip_img)
 
 
-    # ### iii) Add 'site' 'channel' and filter out sample which could not be load (using join)
+img_flat_crop = img_stack_window_norm.reshape(-1, *img_stack_window_norm.shape[-3:])
+labels_flat_crop = np.repeat(labels, num_crop ** 2)
+groups_flat_crop = np.repeat(groups, num_crop ** 2)
 
-    correct_index = (features_pre.select(pl.all().exclude("correction", "img"))
-                     .sort(by=["Metadata_Source", "Metadata_Batch", "Metadata_Plate", "Metadata_Well", "site", "channel"])
-                     .group_by(by=["Metadata_Source", "Metadata_Batch", "Metadata_Plate", "Metadata_Well", "site"], maintain_order=True)
-                     .all()
-                     .with_columns(pl.arange(0,len(features_pre)//len(channel)).alias("ID")))
+def channel_to_rgb(img_array: np.ndarray,
+                   channel: List[str]):
+    if img_array.ndim not in {3, 4}:
+        raise Exception(
+            f"input array should have shape (sample, C, H, W) or (C, H, W).\n"
+            f"Here input shape: {img_array.shape}")
+    if img_array.shape[-3] > len(channel):
+        raise Exception(f"input array should have shape (sample, C, H, W) or (C, H, W) with C <= 5.\n"
+                        f"Here input shape: {img_array.shape}\n"
+                        f"And C: {img_array.shape[-3]}")
 
-    metadata = metadata_pre.select(pl.all().exclude("ID")).join(correct_index,
-                                                                on=["Metadata_Source", "Metadata_Batch", "Metadata_Plate", "Metadata_Well"],
-                                                                how="inner").select("ID", pl.all().exclude("ID")).sort("ID")
+    map_channel_color = {
+        "AGP": "#FFA500",
+        "DNA": "#0000FF",
+        "ER": "#00FF00", #"#65fe08"
+        "Mito": "#FF0000",
+        "RNA": "#FFFF00",
+                         }
+    channel_rgb_weight = np.vstack(list(map(lambda ch: list(mcolors.to_rgb(map_channel_color[ch])), channel)))
+    img_array_rgb = np.tensordot(img_array, channel_rgb_weight, axes=[[-3], [0]])
+    if len(img_array_rgb.shape) == 4:
+        img_array_rgb = img_array_rgb.transpose(0, 3, 1, 2)
+    else:
+        img_array_rgb = img_array_rgb.transpose(2, 0, 1)
+    return img_array_rgb
 
-    features = features_pre.join(metadata.select(pl.col(["Metadata_Source", "Metadata_Batch",
-                                                         "Metadata_Plate", "Metadata_Well", "site",  "ID"])),
-                                 on=["Metadata_Source", "Metadata_Batch", "Metadata_Plate",
-                                     "Metadata_Well", "site"],
-                                 how="inner").sort(by=["ID", "channel"])
 
-    # ## #a) crop image and stack them
-    def crop_square_array(x, des_size):
-        h, w = x.shape
-        h_off, w_off = (h-des_size)//2, (w-des_size)//2
-        return x[h_off:des_size+h_off,w_off:des_size+w_off]
+# filter out low quality image
+def plot_img(img_array, label_array, channel, size=4, fig_name="multiple_cells_small_crop", fig_directory=Path("./figures")):
+    rng = np.random.default_rng(seed=42)
+    choice = rng.choice(img_array.shape[0], size=size*size, replace=False)
+    fig, axis = plt.subplots(size, size, figsize=(5 * size, 5 * size))
+    axis = axis.flatten()
+    for ax, i in zip(axis, choice):
+        ax.imshow(channel_to_rgb(img_array[i], channel).transpose(1, 2 ,0))
+        ax.set_axis_off()
+        ax.set_title(f"class: {label_array[i]}")
+    fig.savefig(fig_directory / fig_name)
+    plt.close()
 
+plot_img(img_flat_crop, labels_flat_crop, channel=channel, size=4, fig_name="multiple_cells_small_crop", fig_directory=fig_directory)
 
-    # shape_image = list(map(lambda x: x.shape, features["img"].to_list()))
-    # shape_image.sort(key=lambda x:x[0])
-    img_crop = list(map(lambda x: crop_square_array(x, des_size=896), features["img"].to_list())) #shape_image[0][0]
-    img_stack = np.array([np.stack([item[1] for item in tostack])
-                 for idx, tostack in groupby(zip(features["ID"].to_list(), img_crop), key=lambda x: x[0])])
-
-    # ## b) Encode moa into moa_id
-    metadata_df = metadata.to_pandas().set_index(keys="ID")
-    metadata_df = metadata_df.assign(moa_id=LabelEncoder().fit_transform(metadata_df["moa"]))
-    labels, groups = metadata_df["moa_id"].values, metadata_df["Metadata_InChIKey"].values
-
-    # ## c) Clip image
-    clip = (1, 99)
-    min_clip_img, max_clip_img = np.percentile(img_stack, clip, axis=(2,3), keepdims=True)
-    clip_image = np.clip(img_stack,
-                         min_clip_img,
-                         max_clip_img)
-    clip_image = (clip_image - min_clip_img) / (max_clip_img - min_clip_img)
-
-    # ## d) Split image in 4
-    def slice_image(img, labels, groups):
-        image_size = img.shape[-1]
-        small_image = np.vstack([img[:, :, :image_size//2, :image_size//2],
-                                 img[:, :, :image_size//2, image_size//2:],
-                                 img[:, :, image_size//2:, :image_size//2],
-                                 img[:, :, image_size//2:, image_size//2:]])
-        small_labels = np.hstack([labels for i in range(4)])
-        small_groups = np.hstack([groups for i in range(4)])
-        return small_image, small_labels, small_groups
-    small_image, small_labels, small_groups = slice_image(clip_image, labels, groups)
-
-    store = zarr.DirectoryStore(Path("image_active_dataset/imgs_labels_groups.zarr"))
-    root = zarr.group(store=store)
-    # Save datasets into the group
-    root.create_dataset('imgs', data=small_image, overwrite=True, chunks=(1, 1, *small_image.shape[2:]))
-    root.create_dataset('labels', data=small_labels, overwrite=True, chunks=1)
-    root.create_dataset('groups', data=small_groups, dtype=object, object_codec=numcodecs.JSON(), overwrite=True, chunks=1)
+# store = zarr.DirectoryStore(Path("image_active_dataset/imgs_labels_groups.zarr"))
+# root = zarr.group(store=store)
+# # Save datasets into the group
+# root.create_dataset('imgs', data=small_image, overwrite=True, chunks=(1, 1, *small_image.shape[2:]))
+# root.create_dataset('labels', data=small_labels, overwrite=True, chunks=1)
+# root.create_dataset('groups', data=small_groups, dtype=object, object_codec=numcodecs.JSON(), overwrite=True, chunks=1)
 
 # # select device
 # device = ("cuda" if torch.cuda.is_available() else "cpu")
