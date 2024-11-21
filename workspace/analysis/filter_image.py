@@ -223,20 +223,25 @@ def channel_to_rgb(img_array: np.ndarray,
                         f"And C: {img_array.shape[-3]}")
 
     map_channel_color = {
-        "AGP": "#FFA500",
-        "DNA": "#0000FF",
-        "ER": "#00FF00", #"#65fe08"
-        "Mito": "#FF0000",
-        "RNA": "#FFFF00",
+        "AGP": "#FF7F00",#"#FFA500", # orange
+        "DNA": "#0000FF", # blue
+        "ER": "#00FF00", #"#65fe08" # green
+        "Mito": "#FF0000", # red
+        "RNA": "#FFFF00", # yellow
                          }
     channel_rgb_weight = np.vstack(list(map(lambda ch: list(mcolors.to_rgb(map_channel_color[ch])), channel)))
     img_array_rgb = np.tensordot(img_array, channel_rgb_weight, axes=[[-3], [0]])
+    # tensordot give img in (sample, H, W, C) or (H, W, C)
+    # we normalize and rotate for the sake of consistency with input
     if len(img_array_rgb.shape) == 4:
-        img_array_rgb = img_array_rgb.transpose(0, 3, 1, 2)
+        norm_rgb = channel_rgb_weight.sum(axis=0).reshape(1, 1, 1, -1)
+        norm_rgb = np.where(norm_rgb > 1, norm_rgb, 1)
+        img_array_rgb = (img_array_rgb / norm_rgb).transpose(0, 3, 1, 2)
     else:
-        img_array_rgb = img_array_rgb.transpose(2, 0, 1)
-    return img_array_rgb
-
+        norm_rgb = channel_rgb_weight.sum(axis=0).reshape(1, 1, -1)
+        norm_rgb = np.where(norm_rgb > 1, norm_rgb, 1)
+        img_array_rgb = (img_array_rgb / norm_rgb).transpose(2, 0, 1)
+    return img_array_rgb.clip(0, 1) # to ensure correct normalisation
 
 # filter out low quality image
 def plot_img(img_array, label_array, channel, size=4, fig_name="multiple_cells_small_crop", fig_directory=Path("./figures")):
