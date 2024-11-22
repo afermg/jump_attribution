@@ -7,6 +7,7 @@ from multiprocessing.pool import ThreadPool
 from pathlib import Path
 from typing import List
 
+import cv2
 import matplotlib.colors as mcolors
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
@@ -18,13 +19,11 @@ import zarr
 from jump_portrait.fetch import get_jump_image
 from jump_portrait.utils import batch_processing, parallel
 from matplotlib import colors
-from skimage.color import rgb2gray
-from skimage.feature import blob_log
+from skimage.feature import (  # blob_dog is a faster approximation of blob_log
+    blob_dog, blob_log)
 from skimage.filters import threshold_otsu
-from skimage.measure import shannon_entropy
-# import skimage.measure
+from skimage.util import img_as_float64, img_as_ubyte
 from skimage.util.shape import view_as_windows
-from torchvision.transforms import v2
 
 import custom_dataset
 
@@ -32,8 +31,10 @@ fig_directory = Path("/home/hhakem/projects/counterfactuals_projects/workspace/a
 
 
 """
- --- plot the mapping between moa_id to perturbation into a figure to keep this mapping in mind ---
+# plot the mapping between moa_id to  #####################################################################
+# perturbation into a figure to keep this mapping in mind #####################################################################
 """
+
 def plot_table_id_to_pert(metadata: pl.DataFrame,
                           fig_name: str="moa_id_to_pert",
                           fig_directory: str=Path("./figures")):
@@ -80,13 +81,9 @@ def plot_table_id_to_pert(metadata: pl.DataFrame,
     fig.savefig(fig_directory / fig_name)
     plt.close()
 
-metadata = pl.read_csv("target2_eq_moa2_active_metadata")
-# plot_table_id_to_pert(metadata, fig_name="moa_id_to_pert", fig_directory=fig_directory)
-
 """
---- Start fetching images and process them ---
+# Fetching images while waiting for jump_portrait to be merged #####################################################################
 """
-
 
 def try_function(f: Callable):
     '''
@@ -106,7 +103,6 @@ def try_function(f: Callable):
     def tryed_fn(*item, **kwargs):
         try:
             result = f(*item, **kwargs)
-
         except:
             result = None
 
@@ -155,74 +151,40 @@ def get_jump_image_batch(
                         # verbose=verbose)
 
     return iterable, img_list
-
-# if not os.path.exists(Path("image_active_dataset/imgs_labels_groups.zarr")):
-
-channel = ['AGP', 'DNA', 'ER', 'Mito', 'RNA']
-channel = sorted(channel) # just to make sure there is consistency across data. This should be the default.
-iterable, img_list = get_jump_image_batch(metadata.select(pl.col(["Metadata_Source", "Metadata_Batch",
-                                                                       "Metadata_Plate", "Metadata_Well"])),
-                                          channel=channel,#, 'ER', 'AGP', 'Mito', 'RNA'],
-                                          site=["1", "2"],#[str(i) for i in range(1, 7)],
-                                          correction=None) #None, 'Illum'
-mask = [x is not None for x in img_list]
-iterable_mask, img_list_mask = [it for i, it in enumerate(iterable) if mask[i]],  [img for i, img in enumerate(img_list) if mask[i]]
-
-zip_iter_img = sorted(zip(iterable_mask, img_list_mask),
-                      key=lambda x: (x[0][0], x[0][1], x[0][2], x[0][3], x[0][5], x[0][4]))
-# grouped image are returned as the common key, and then the zip of param and img, so we retrieve the img then we stack
-iterable_stack, img_list_stack = map(lambda tup: list(tup),
-                                zip(*starmap(lambda key, param_img: (key, np.stack(list(map(lambda x: x[1], param_img)))),
-                                             groupby(zip_iter_img,
-                                                     key=lambda x: (x[0][0], x[0][1], x[0][2], x[0][3], x[0][5])))))
-
-# retrieve moa_id and InChIKey
-labels, groups = tuple((metadata
-        .select(pl.col(["Metadata_Source", "Metadata_Batch", "Metadata_Plate", "Metadata_Well", "moa_id", "Metadata_InChIKey"]))
-        .join(pl.DataFrame([t[:4] for t in iterable_stack],
-                           schema=["Metadata_Source", "Metadata_Batch", "Metadata_Plate", "Metadata_Well"]),
-              on=["Metadata_Source", "Metadata_Batch", "Metadata_Plate", "Metadata_Well"],
-              how="left")
-        .select(pl.col(["moa_id", "Metadata_InChIKey"]))
-        .to_dict(as_series=False)
-        .values()))
-
-# crop img in small square
-list_shape = np.array(list(map(lambda x: min(*x.shape[-2:]), img_list_stack)))
-wanted_crop = 128
-num_crop = 8 #int(np.round(np.median(list_shape/ wanted_crop)))
-
+"""
+# utility for image - cropping - clipping  ####################################
+"""
 def window_step(img, window_length, window_num):
     length = min(*img.shape[-2:])
     return (length - window_length) // (window_num -1)
 
-img_stack_window = np.vstack(list(map(
-    lambda img: view_as_windows(img,
-                                (img.shape[-3], wanted_crop, wanted_crop),
-                                window_step(img, wanted_crop, num_crop)),
-    img_list_stack)))
+def window_img(img_list, wanted_crop=128, num_crop=8):
+    with ThreadPool(cpu_count()) as thread:
+        img_window = np.vstack(list(
+            thread.map(lambda img: view_as_windows(img,
+                                            (img.shape[-3], wanted_crop, wanted_crop),
+                                            window_step(img, wanted_crop, num_crop)),
+                        img_list)))
 
-pixel_window =  sum(list(map(np.size,  img_stack_window)))
-pixel_origin = sum(list(map(np.size,  img_list_stack)))
-print(f"pixel increase due to overlapping window: {(pixel_window - pixel_origin) / pixel_origin:.2%}")
+    pixel_window =  sum(list(map(np.size,  img_window)))
+    pixel_origin = sum(list(map(np.size,  img_list)))
+    print(f"pixel increase due to overlapping window: {(pixel_window - pixel_origin) / pixel_origin:.2%}")
+    return img_window
 
-# clip image
-# axis of img_stack_window = (sample, row_grid, column_grid, channel, H, W)
-clip = (1, 99)
-min_clip_img, max_clip_img = np.percentile(img_stack_window, clip,
-                                           axis=(1, 2, 4, 5), # (1, 2, 4, 5) : normalise per image of origin or (4, 5) : normalise per tile
-                                           keepdims=True)
-img_stack_window_norm = np.clip(img_stack_window,
-                                min_clip_img,
-                                max_clip_img)
-img_stack_window_norm = (img_stack_window_norm - min_clip_img) / (max_clip_img - min_clip_img)
+def clip_norm_img(img, clip=(1, 99), axis=(1, 2, 4, 5)):
+    min_clip_img, max_clip_img = np.percentile(img, clip,
+                                               axis=axis,
+                                               keepdims=True)
+    img_norm = np.clip(img,
+                        min_clip_img,
+                        max_clip_img)
+    img_norm = (img_norm - min_clip_img) / (max_clip_img - min_clip_img)
+    return img_norm
 
+"""
+# Plotting function to plot img in rgb - plot blob and otsu #####################################################################
+"""
 
-img_flat_crop = img_stack_window_norm.reshape(-1, *img_stack_window_norm.shape[-3:])
-labels_flat_crop = np.repeat(labels, num_crop ** 2)
-groups_flat_crop = np.repeat(groups, num_crop ** 2)
-
-# plot rgb image for any choice of channel
 def channel_to_rgb(img_array: np.ndarray,
                    channel: List[str]):
     if img_array.ndim not in {3, 4}:
@@ -249,9 +211,9 @@ def channel_to_rgb(img_array: np.ndarray,
     img_array_rgb = np.moveaxis(img_array_rgb / norm_rgb, -1, -3)
     return img_array_rgb.clip(0, 1) # to ensure correct normalisation
 
-
-def plot_img(img_array, label_array, channel, size=4, fig_name="multiple_cells_small_crop", fig_directory=Path("./figures")):
-    rng = np.random.default_rng(seed=42)
+def plot_img(img_array, label_array, channel, size=4, fig_name="multiple_cells_small_crop",
+             fig_directory=Path("./figures"), seed=42):
+    rng = np.random.default_rng(seed)
     choice = rng.choice(img_array.shape[0], size=size*size, replace=False)
     fig, axis = plt.subplots(size, size, figsize=(5 * size, 5 * size))
     axis = axis.flatten()
@@ -263,88 +225,54 @@ def plot_img(img_array, label_array, channel, size=4, fig_name="multiple_cells_s
     fig.savefig(fig_directory / fig_name)
     plt.close()
 
-plot_img(img_flat_crop, labels_flat_crop, channel=channel, size=6,
-         fig_name="multiple_cells_small_crop_norm_big_img", fig_directory=fig_directory)
-
-## filter out low quality image
-# a) try blob detection
-
-
-img_rgb = channel_to_rgb(img_flat_crop, channel)
-img_gray = rgb2gray(np.moveaxis(img_rgb, -3, -1))
-
-img_gray_dna = img_flat_crop[:, 1]
-
-def blob_log_compute(img, **kwargs):
-    blob = blob_log(img, **kwargs)
-    blob[:, 2] = blob[: , 2] * np.sqrt(2)
-    return blob
-
-with ThreadPool(cpu_count()) as thread:
-    blobs_log = list(thread.map(partial(blob_log_compute, min_sigma=5, max_sigma=50, num_sigma=10, threshold=0.05), img_gray))
-
-with ThreadPool(cpu_count()) as thread:
-    blobs_log_dna = list(thread.map(partial(blob_log_compute, min_sigma=5, max_sigma=50, num_sigma=10, threshold=0.05), img_gray_dna))
-
-def plot_img_blob(img_array, blob_list, label_array, channel, size=4, fig_name="multiple_cells_small_crop", fig_directory=Path("./figures")):
-    rng = np.random.default_rng(seed=42)
+def plot_img_blob(img_array, blob_list, label_array, channel,
+                  blob_thr=None, size=4,
+                  fig_name="multiple_cells_small_crop",
+                  fig_directory=Path("./figures"), seed=42):
+    rng = np.random.default_rng(seed)
     choice = rng.choice(img_array.shape[0], size=size*size, replace=False)
     fig, axis = plt.subplots(size, size, figsize=(5 * size, 5 * size))
     axis = axis.flatten()
     for ax, i in zip(axis, choice):
         img_to_plot = channel_to_rgb(img_array[i], channel)
-        # img_gray = rgb2gray(np.moveaxis(img_to_plot, -3, -1))
-        # ax.imshow(img_gray)
         ax.imshow(img_to_plot.transpose(1, 2 ,0))
+        blob_area = cumulative_circle_area_numpy(blob_list[i])
+        if blob_thr is not None:
+            if blob_area < blob_thr:
+                ax.add_patch(mpatches.Rectangle((0,0), 128, 128, color="red", alpha=0.3))
         for blob in blob_list[i]:
             y, x, r = blob
             c = plt.Circle((x, y), r, color="red", linewidth=2, fill=False)
             ax.add_patch(c)
         ax.set_axis_off()
-        ax.set_title(f"class: {label_array[i]}")
+        ax.set_title(f"class: {label_array[i]} - blob_area: {blob_area:.1%}")
     fig.savefig(fig_directory / fig_name)
     plt.close()
 
-plot_img_blob(img_flat_crop[:, 1:2], blobs_log_dna, labels_flat_crop, channel=channel[1:2], size=12,
-         fig_name="multiple_cells_small_crop_norm_big_img_blob_log_dna", fig_directory=fig_directory)
-
-
-def cumulative_circle_area_numpy(circle_data, square_size=128):
-    """
-    Compute the cumulative area of circles intersecting with a square using NumPy.
-
-    Parameters:
-    - circle_data: 2D array where each row is [x, y, radius].
-    - square_size: Size of the square (default is 128x128).
-
-    Returns:
-    - Cumulative area of all circles intersecting the square.
-    """
-    # Create a grid of points representing the square
-    x_grid, y_grid = np.ogrid[:square_size, :square_size]
-
-    # Expand circle parameters for vectorized operations
-    x_centers = circle_data[:, 0][:, np.newaxis, np.newaxis]
-    y_centers = circle_data[:, 1][:, np.newaxis, np.newaxis]
-    radii = circle_data[:, 2][:, np.newaxis, np.newaxis]
-
-    # Compute squared distances from the grid to each circle center
-    distance_squared = (x_grid - x_centers)**2 + (y_grid - y_centers)**2
-
-    # Create masks for points within each circle
-    circle_masks = distance_squared <= radii**2
-
-    # Sum up areas for all circles
-    # Each `True` in the mask corresponds to 1 unit of area
-    total_area = np.sum(np.sum(circle_masks, axis=0).clip(0, 1)) / (square_size ** 2)
-    return total_area
-
-with ThreadPool(cpu_count()) as thread:
-    blob_log_dna_area = np.stack(list(thread.map(partial(cumulative_circle_area_numpy,square_size=128), blobs_log_dna)))[:, None]
-
+def plot_img_otsu(img_array, img_binary, label_array, channel, size=4,
+                  otsu_thr=0.05, alpha=0.2, fig_name="multiple_cells_small_crop",
+                  fig_directory=Path("./figures"),
+                  seed=42):
+    rng = np.random.default_rng(seed)
+    choice = rng.choice(img_array.shape[0], size=size*size, replace=False)
+    fig, axis = plt.subplots(size, size, figsize=(5 * size, 5 * size))
+    axis = axis.flatten()
+    for ax, i in zip(axis, choice):
+        img_to_plot = channel_to_rgb(img_array[i], channel)
+        ax.imshow(img_to_plot.transpose(1, 2 ,0))
+        ax.imshow(img_binary[i], cmap="gray", alpha=alpha)
+        area = (img_binary[i].sum(axis=(0,1)) / img_binary[i].size)
+        if otsu_thr is not None:
+            if area < otsu_thr:
+                ax.add_patch(mpatches.Rectangle((0,0), 128, 128, color="red", alpha=0.3))
+            ax.set_axis_off()
+        ax.set_title(f"class: {label_array[i]} - otsu_area: {area:.2%} ")
+    fig.savefig(fig_directory / fig_name)
+    plt.close()
 
 def plot_feat_distrib_per_class(img_feat, label_array, channel,
                                 bins=30,
+                                thr=None,
                                 fig_name="feat_distribution_per_class_per_channel",
                                 fig_directory=Path("./figures")):
     img_feat_per_class = list(
@@ -380,6 +308,17 @@ def plot_feat_distrib_per_class(img_feat, label_array, channel,
                          color=map_channel_color[channel[channel_idx]],
                          alpha=0.7)
 
+            if thr is not None:
+                ax.axvline(x=thr, color='red', linestyle='--', linewidth=1.5, label=f"Threshold = {thr}")
+
+                # Add bold x-tick for `thr`
+                xticks = ax.get_xticks()
+                if thr not in xticks:
+                    xticks = np.append(xticks, thr)
+                ax.set_xticks(xticks)
+                ax.set_xticklabels(
+                    [f"{tick:.1f}" if tick != thr else f"$\\bf{{{tick}}}$" for tick in xticks]
+                )
             # Titles for first row and first column
             if array_idx == 0:
                 ax.set_title(f"Channel {channel[channel_idx]}", fontsize=10)
@@ -390,127 +329,257 @@ def plot_feat_distrib_per_class(img_feat, label_array, channel,
     fig.suptitle(fig_name, fontsize=16)
     fig.savefig(fig_directory / fig_name)
 
+def plot_joint_distribution(x, y, categories,
+                            x_name="X", y_name="Y",
+                            fig_name="joint_distribution",
+                            fig_directory=Path("./figures"),
+                            kind='scatter', height=10):
 
-plot_feat_distrib_per_class(blob_log_dna_area, labels_flat_crop, channel[1:2],
-                            bins=50,
-                            fig_name="blob_area_dna_distribution",
-                            fig_directory=fig_directory)
+    # Create the jointplot
+    g = sns.jointplot(
+        x=x,
+        y=y,
+        hue=categories,
+        kind=kind,
+        alpha=0.6,
+        palette=sns.color_palette()[:len(np.unique(categories))],
+        height=height
+    )
 
+    # Customize the axis labels
+    g.ax_joint.set_xlabel(x_name, fontsize=12)
+    g.ax_joint.set_ylabel(y_name, fontsize=12)
 
-def plot_img_blob_with_area(img_array, blob_list, label_array, channel, blob_thr=0.2, size=4, fig_name="multiple_cells_small_crop", fig_directory=Path("./figures")):
-    rng = np.random.default_rng(seed=42)
-    choice = rng.choice(img_array.shape[0], size=size*size, replace=False)
-    fig, axis = plt.subplots(size, size, figsize=(5 * size, 5 * size))
-    axis = axis.flatten()
-    for ax, i in zip(axis, choice):
-        img_to_plot = channel_to_rgb(img_array[i], channel)
-        ax.imshow(img_to_plot.transpose(1, 2 ,0))
-        blob_area = cumulative_circle_area_numpy(blob_list[i])
-        if blob_area < blob_thr:
-            ax.add_patch(mpatches.Rectangle((0,0), 128, 128, color="red", alpha=0.3))
-        for blob in blob_list[i]:
-            y, x, r = blob
-            c = plt.Circle((x, y), r, color="red", linewidth=2, fill=False)
-            ax.add_patch(c)
-        ax.set_axis_off()
-        ax.set_title(f"class: {label_array[i]} - blob_area: {blob_area:.1%}")
-    fig.savefig(fig_directory / fig_name)
+    # Customize the legend title
+    g.ax_joint.legend_.set_title("Class")
+
+    # Save the figure
+    plt.title(fig_name)
+    plt.tight_layout()
+    plt.savefig(fig_directory / fig_name)
     plt.close()
+"""
+# Filter utility  #####################################################################
+"""
 
-plot_img_blob_with_area(img_flat_crop, blobs_log_dna, labels_flat_crop, channel=channel,
-                        blob_thr=0.03, size=12,
-                        fig_name="multiple_cells_small_crop_norm_big_img_blob_log_area", fig_directory=fig_directory)
+def blob_compute(img, func=blob_dog, **kwargs):
+    blob = func(img, **kwargs)
+    blob[:, 2] = blob[: , 2] * np.sqrt(2)
+    return blob
 
-# b) otsu filter
-import cv2
-size_closing = 10
-kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE,(size_closing, size_closing))
-with ThreadPool(cpu_count()) as thread:
-    otsu_filt = list(thread.map(threshold_otsu, img_gray))
-    img_otsu = (img_gray >= np.stack(otsu_filt)[:, None, None]).astype(np.float32)
-    img_otsu_open = np.stack(list(thread.map(partial(cv2.morphologyEx, op=cv2.MORPH_OPEN, kernel=kernel), img_otsu)))
+def cumulative_circle_area_numpy(circle_data, return_mask=False, square_size=128):
+    """
+    Compute the cumulative area of circles intersecting with a square using NumPy.
 
-with ThreadPool(cpu_count()) as thread:
-    otsu_filt_dna = list(thread.map(threshold_otsu, img_gray_dna))
-    img_otsu_dna = (img_gray_dna >= np.stack(otsu_filt_dna)[:, None, None]).astype(np.float32)
-    img_otsu_open_dna = np.stack(list(thread.map(partial(cv2.morphologyEx, op=cv2.MORPH_OPEN, kernel=kernel), img_otsu_dna)))
+    Parameters:
+    - circle_data: 2D array where each row is [x, y, radius].
+    - square_size: Size of the square (default is 128x128).
 
-def plot_img_otsu(img_array, img_binary, label_array, channel, size=4,
-                  otsu_thr=0.05, alpha=0.2, fig_name="multiple_cells_small_crop", fig_directory=Path("./figures")):
-    rng = np.random.default_rng(seed=42)
-    choice = rng.choice(img_array.shape[0], size=size*size, replace=False)
-    fig, axis = plt.subplots(size, size, figsize=(5 * size, 5 * size))
-    axis = axis.flatten()
-    for ax, i in zip(axis, choice):
-        img_to_plot = channel_to_rgb(img_array[i], channel)
-        ax.imshow(img_to_plot.transpose(1, 2 ,0), alpha=1-alpha)
-        ax.imshow(img_binary[i], cmap="gray", alpha=alpha)
-        if (img_binary[i].sum(axis=(0,1)) / img_binary[i].size) < otsu_thr:
-            ax.add_patch(mpatches.Rectangle((0,0), 128, 128, color="red", alpha=0.3))
-        ax.set_axis_off()
-        ax.set_title(f"class: {label_array[i]}")
-    fig.savefig(fig_directory / fig_name)
-    plt.close()
+    Returns:
+    - Cumulative area of all circles intersecting the square.
+    """
+    # Create a grid of points representing the square
+    x_grid, y_grid = np.ogrid[:square_size, :square_size]
 
-plot_img_otsu(img_flat_crop, img_otsu_open, labels_flat_crop, channel=channel, size=12,
-              otsu_thr=0.05,
-              alpha=0.2,
-              fig_name="multiple_cells_small_crop_norm_big_img_otsu", fig_directory=fig_directory)
+    # Expand circle parameters for vectorized operations
+    x_centers = circle_data[:, 0][:, np.newaxis, np.newaxis]
+    y_centers = circle_data[:, 1][:, np.newaxis, np.newaxis]
+    radii = circle_data[:, 2][:, np.newaxis, np.newaxis]
 
-plot_img_otsu(img_flat_crop, img_otsu_open_dna, labels_flat_crop, channel=channel, size=12,
-              otsu_thr=0.03,
-              alpha=0.2,
-              fig_name="multiple_cells_small_crop_norm_big_img_otsu", fig_directory=fig_directory)
+    # Compute squared distances from the grid to each circle center
+    distance_squared = (x_grid - x_centers)**2 + (y_grid - y_centers)**2
 
-plot_feat_distrib_per_class((img_otsu_open.sum(axis=(1,2)) / img_otsu_open[0].size)[:, None],
-                            labels_flat_crop,
-                            channel[1:2],
-                            bins=50,
-                            fig_name="otsu_area_distribution",
-                            fig_directory=fig_directory)
+    # Create masks for points within each circle
+    circle_masks = distance_squared <= radii**2
 
+    # Sum up areas for all circles
+    # Each `True` in the mask corresponds to 1 unit of area
+    mask = np.sum(circle_masks, axis=0).clip(0, 1)
+    if return_mask:
+        return mask
+    else:
+        total_area = np.sum(mask) / (square_size ** 2)
+        return total_area
+
+def get_filter_thr(feat, num_bin=1):
+    """
+    feature is a descriptor of our images.
+    compute bin width of the histogram (distribution) of feature using the
+    ‘fd’ (Freedman Diaconis Estimator). The threshold above which we keep every imgages
+    is given by this estimator * num_bin (higher the num_bin, less images are retrieved).
+    """
+    iqr = np.subtract(*np.percentile(feat, [75, 25]))
+    fd = 2.0 * iqr * feat.size ** (-1.0 / 3.0)
+    return num_bin * fd
+
+def get_mask_thr(feat, labels, num_bin=1):
+    """
+    get threshold for feature grouped by label. Then retrieve mask of feature above the threshold for each group
+    """
+    mask_labels = np.vstack(list(map(lambda i : labels == i, np.unique(labels))))
+    thr_array = np.hstack(list(map(lambda mask: get_filter_thr(feat[mask], num_bin), mask_labels)))
+    mask_above_thr = (feat >= thr_array).T
+    return (mask_above_thr * mask_labels).sum(axis=0).astype(bool)
+
+"""
+# Execute above code  #####################################################################
+"""
+#### Fetch image and stack each channel
+metadata = pl.read_csv("target2_eq_moa2_active_metadata")
+plot_table_id_to_pert(metadata, fig_name="moa_id_to_pert", fig_directory=fig_directory)
+
+
+channel = ['AGP', 'DNA', 'ER', 'Mito', 'RNA']
+channel = sorted(channel) # just to make sure there is consistency across data. This should be the default.
+iterable, img_list = get_jump_image_batch(metadata.select(pl.col(["Metadata_Source", "Metadata_Batch",
+                                                                  "Metadata_Plate", "Metadata_Well"])),
+                                          channel=channel,#, 'ER', 'AGP', 'Mito', 'RNA'],
+                                          site=[str(i) for i in range(1, 7)],
+                                          correction=None) #None, 'Illum'
+mask = [x is not None for x in img_list]
+iterable_mask, img_list_mask = [it for i, it in enumerate(iterable) if mask[i]],  [img for i, img in enumerate(img_list) if mask[i]]
+
+zip_iter_img = sorted(zip(iterable_mask, img_list_mask),
+                      key=lambda x: (x[0][0], x[0][1], x[0][2], x[0][3], x[0][5], x[0][4]))
+# grouped image are returned as the common key, and then the zip of param and img, so we retrieve the img then we stack
+iterable_stack, img_list_stack = map(lambda tup: list(tup),
+                                zip(*starmap(lambda key, param_img: (key, np.stack(list(map(lambda x: x[1], param_img)))),
+                                             groupby(zip_iter_img,
+                                                     key=lambda x: (x[0][0], x[0][1], x[0][2], x[0][3], x[0][5])))))
+
+#### Retrieve moa_id and InChIKey
+labels, groups = tuple((metadata
+        .select(pl.col(["Metadata_Source", "Metadata_Batch", "Metadata_Plate", "Metadata_Well", "moa_id", "Metadata_InChIKey"]))
+        .join(pl.DataFrame([t[:4] for t in iterable_stack],
+                           schema=["Metadata_Source", "Metadata_Batch", "Metadata_Plate", "Metadata_Well"]),
+              on=["Metadata_Source", "Metadata_Batch", "Metadata_Plate", "Metadata_Well"],
+              how="left")
+        .select(pl.col(["moa_id", "Metadata_InChIKey"]))
+        .to_dict(as_series=False)
+        .values()))
+
+#### Crop img in small square, clip normalize them and flatten window - plot example of images
+img_stack_window = window_img(img_list_stack, wanted_crop=128, num_crop=8) # axis = (sample, row_grid, column_grid, channel, H, W)
+# NB: (1, 2, 4, 5) : normalise per image of origin and (4, 5) : normalise per tile
+img_stack_window_norm = clip_norm_img(img_stack_window, clip=(1, 99), axis=(1, 2, 4, 5)) # clip on big image to reduce noise
+
+
+img_flat_crop = img_stack_window_norm.reshape(-1, *img_stack_window_norm.shape[-3:])
+labels_flat_crop = np.repeat(labels, len(img_flat_crop) // len(labels))
+groups_flat_crop = np.repeat(groups, len(img_flat_crop) // len(labels))
+
+# plot rgb image
 plot_img(img_flat_crop, labels_flat_crop, channel=channel, size=12,
          fig_name="multiple_cells_small_crop_norm_big_img", fig_directory=fig_directory)
 
+#### Filter out low quality image
+##### Blob detection on dna channel (dna channel is relevant to nucleus so is a proxi for precise cell detection)
+img_gray_dna = img_as_ubyte(img_flat_crop[:, 1])
 
-# c) try shannon_entropy
-img_integer = (img_flat_crop * 255).astype(np.int64)#.astype(np.int64)
-img_shannon = np.stack(list(map(lambda img_ch: np.stack(
-    list(map(shannon_entropy, img_ch))),
-                                img_integer)))
+with ThreadPool(cpu_count()) as thread:
+    blobs_dna = list(thread.map(partial(blob_compute, func=blob_dog, min_sigma=5, max_sigma=25, threshold=0.1), img_gray_dna))
 
-plot_feat_distrib_per_class(img_shannon, labels_flat_crop, channel,
-                            bins=30,
-                            fig_name="shannon_distribution_per_class_per_channel",
+with ThreadPool(cpu_count()) as thread:
+    blobs_dna_area = np.stack(list(thread.map(partial(cumulative_circle_area_numpy,square_size=128), blobs_dna)))[:, None]
+
+plot_feat_distrib_per_class(blobs_dna_area, labels_flat_crop, channel[1:2],
+                            bins="auto",
+                            thr=0.03,
+                            fig_name="blob_area_dna_distribution",
                             fig_directory=fig_directory)
 
+plot_img_blob(img_flat_crop[:, 1:2], blobs_dna, labels_flat_crop, channel=channel[1:2],
+              blob_thr=None, size=12,
+              fig_name="multiple_cells_small_crop_norm_big_img_blob", fig_directory=fig_directory)
 
-def plot_img_with_shannon(img_array, img_shannon, label_array, channel, shan_thr=0.2, size=4, fig_name="multiple_cells_small_crop", fig_directory=Path("./figures")):
-    rng = np.random.default_rng(seed=42)
-    choice = rng.choice(img_array.shape[0], size=size*size, replace=False)
-    fig, axis = plt.subplots(size, size, figsize=(5 * size, 5 * size))
-    axis = axis.flatten()
-    for ax, i in zip(axis, choice):
-        img_to_plot = channel_to_rgb(img_array[i], channel)
-        ax.imshow(img_to_plot.transpose(1, 2 ,0))
-        if img_shannon[i] < shan_thr:
-            ax.add_patch(mpatches.Rectangle((0,0), 128, 128, color="red", alpha=0.3))
-        ax.set_axis_off()
-        ax.set_title(f"class: {label_array[i]} - sha_area: {img_shannon[i]:.2f}")
-    fig.savefig(fig_directory / fig_name)
-    plt.close()
+##### Otsu filter with morphological opening to remove noise again on dna channel
+size_closing = 10
+kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE,(size_closing, size_closing))
 
-plot_img_with_shannon(img_flat_crop,
-                        img_shannon,
-                        labels_flat_crop, channel=channel[1:2], shan_thr=0.1, size=12,
-         fig_name="multiple_cells_small_crop_norm_big_img_shanon", fig_directory=fig_directory)
+with ThreadPool(cpu_count()) as thread:
+    otsu_filt_dna = list(thread.map(threshold_otsu, img_gray_dna))
+    otsu_dna = (img_gray_dna >= np.stack(otsu_filt_dna)[:, None, None]).astype(np.float32)
+    otsu_dna = np.stack(list(thread.map(partial(cv2.morphologyEx, op=cv2.MORPH_OPEN, kernel=kernel), otsu_dna)))
 
-# d) black pixel detection
+otsu_dna_area = (otsu_dna.sum(axis=(1,2)) / otsu_dna[0].size)[:, None]
+plot_feat_distrib_per_class(otsu_dna_area,
+                            labels_flat_crop,
+                            channel[1:2],
+                            thr=0.02,
+                            bins="auto",
+                            fig_name="otsu_area_distribution",
+                            fig_directory=fig_directory)
+
+plot_img_otsu(img_flat_crop[:, 1:2], otsu_dna, labels_flat_crop, channel=channel[1:2], size=12,
+              otsu_thr=None,
+              alpha=0.2,
+              fig_name="multiple_cells_small_crop_norm_big_img_otsu", fig_directory=fig_directory)
+
+##### Combining otsu filter and blob filter
+with ThreadPool(cpu_count()) as thread:
+    blobs_dna_mask = np.stack(list(thread.map(partial(cumulative_circle_area_numpy, return_mask=True, square_size=128), blobs_dna)))
+
+blob_otsu_dna = (blobs_dna_mask * otsu_dna).clip(0, 1)
+blob_otsu_dna_area = (blob_otsu_dna.sum(axis=(1,2)) / blob_otsu_dna[0].size)[:, None]
+
+plot_feat_distrib_per_class(blob_otsu_dna_area,
+                            labels_flat_crop,
+                            channel[1:2],
+                            thr=0.02,
+                            bins="auto",
+                            fig_name="blob_otsu_area_distribution",
+                            fig_directory=fig_directory)
+
+plot_img_otsu(img_flat_crop[:, 1:2], blob_otsu_dna, labels_flat_crop, channel=channel[1:2], size=12,
+              otsu_thr=None,
+              alpha=0.2,
+              fig_name="multiple_cells_small_crop_norm_big_img_blob_otsu", fig_directory=fig_directory)
+
+##### Show joint distribution of each features obtained
+plot_joint_distribution(blobs_dna_area[:,0], otsu_dna_area[:,0], labels_flat_crop,
+                        x_name="blob area", y_name="otsu area",
+                        fig_name="joint_distribution_blobs_vs_otsu_area",
+                        fig_directory=Path("./figures"),
+                        kind='scatter', height=10)
+
+plot_joint_distribution(blobs_dna_area[:,0], blob_otsu_dna_area[:,0], labels_flat_crop,
+                        x_name="blob area", y_name="blob_otsu area",
+                        fig_name="joint_distribution_blobs_vs_blob_otsu_area",
+                        fig_directory=Path("./figures"),
+                        kind='scatter', height=10)
+
+plot_joint_distribution(blob_otsu_dna_area[:,0], otsu_dna_area[:,0], labels_flat_crop,
+                        x_name="blob_otsu area", y_name="otsu area",
+                        fig_name="joint_distribution_blob_otsu_vs_otsu_area",
+                        fig_directory=Path("./figures"),
+                        kind='scatter', height=10)
+
+#### Filter out low quality images based on the blob_otsu_dna_area feature.
+filter_mask = get_mask_thr(blob_otsu_dna_area, labels_flat_crop, num_bin=2)
+img_filt = img_flat_crop[filter_mask]
+labels_filt = labels_flat_crop[filter_mask]
+groups_filt = groups_flat_crop[filter_mask]
+
+plot_img(img_filt, labels_filt, channel=channel, size=12,
+         fig_name="multiple_cells_small_crop_norm_big_img_filt",
+         fig_directory=fig_directory,
+         seed=12)
 
 
+#### Enhance contrast using CLAHE Histogram equalization
+clip_limit = 2
+tile_grid_size = (8, 8)
+clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=tile_grid_size)
 
-# e) white pixel detection
+with ThreadPool(cpu_count()) as thread:
+    img_filt_contrast = np.stack(list(
+        thread.map(lambda img: np.stack(list(map(lambda img_ch: img_as_float64(clahe.apply(img_as_ubyte(img_ch))), img))),
+                   img_filt)))
 
+plot_img(img_filt_contrast, labels_filt, channel=channel, size=12,
+         fig_name="multiple_cells_small_crop_norm_big_img_filt_contrasted",
+         fig_directory=fig_directory,
+         seed=12)
 
 # store = zarr.DirectoryStore(Path("image_active_dataset/imgs_labels_groups.zarr"))
 # root = zarr.group(store=store)
