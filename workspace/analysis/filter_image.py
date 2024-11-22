@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 from collections.abc import Callable
+from functools import partial
 from itertools import groupby, product, starmap
+from multiprocessing import cpu_count
+from multiprocessing.pool import ThreadPool
 from pathlib import Path
 from typing import List
 
@@ -10,10 +13,15 @@ import matplotlib.pyplot as plt
 import numcodecs
 import numpy as np
 import polars as pl
+import seaborn as sns
 import zarr
 from jump_portrait.fetch import get_jump_image
 from jump_portrait.utils import batch_processing, parallel
 from matplotlib import colors
+from skimage.color import rgb2gray
+from skimage.feature import blob_log
+from skimage.filters import threshold_otsu
+from skimage.measure import shannon_entropy
 # import skimage.measure
 from skimage.util.shape import view_as_windows
 from torchvision.transforms import v2
@@ -150,7 +158,8 @@ def get_jump_image_batch(
 
 # if not os.path.exists(Path("image_active_dataset/imgs_labels_groups.zarr")):
 
-channel = ['AGP', 'DNA']#, 'ER', 'Mito', 'RNA']
+channel = ['AGP', 'DNA', 'ER', 'Mito', 'RNA']
+channel = sorted(channel) # just to make sure there is consistency across data. This should be the default.
 iterable, img_list = get_jump_image_batch(metadata.select(pl.col(["Metadata_Source", "Metadata_Batch",
                                                                        "Metadata_Plate", "Metadata_Well"])),
                                           channel=channel,#, 'ER', 'AGP', 'Mito', 'RNA'],
@@ -200,7 +209,9 @@ print(f"pixel increase due to overlapping window: {(pixel_window - pixel_origin)
 # clip image
 # axis of img_stack_window = (sample, row_grid, column_grid, channel, H, W)
 clip = (1, 99)
-min_clip_img, max_clip_img = np.percentile(img_stack_window, clip, axis=(1, 2, 4, 5), keepdims=True)
+min_clip_img, max_clip_img = np.percentile(img_stack_window, clip,
+                                           axis=(1, 2, 4, 5), # (1, 2, 4, 5) : normalise per image of origin or (4, 5) : normalise per tile
+                                           keepdims=True)
 img_stack_window_norm = np.clip(img_stack_window,
                                 min_clip_img,
                                 max_clip_img)
@@ -211,6 +222,7 @@ img_flat_crop = img_stack_window_norm.reshape(-1, *img_stack_window_norm.shape[-
 labels_flat_crop = np.repeat(labels, num_crop ** 2)
 groups_flat_crop = np.repeat(groups, num_crop ** 2)
 
+# plot rgb image for any choice of channel
 def channel_to_rgb(img_array: np.ndarray,
                    channel: List[str]):
     if img_array.ndim not in {3, 4}:
@@ -223,40 +235,282 @@ def channel_to_rgb(img_array: np.ndarray,
                         f"And C: {img_array.shape[-3]}")
 
     map_channel_color = {
-        "AGP": "#FF7F00",#"#FFA500", # orange
-        "DNA": "#0000FF", # blue
-        "ER": "#00FF00", #"#65fe08" # green
-        "Mito": "#FF0000", # red
-        "RNA": "#FFFF00", # yellow
+        "AGP": "#FF7F00", #"#FFA500", # Orange
+        "DNA": "#0000FF", # Blue
+        "ER": "#00FF00", #"#65fe08" # Green
+        "Mito": "#FF0000", # Red
+        "RNA": "#FFFF00", # Yellow
                          }
     channel_rgb_weight = np.vstack(list(map(lambda ch: list(mcolors.to_rgb(map_channel_color[ch])), channel)))
     img_array_rgb = np.tensordot(img_array, channel_rgb_weight, axes=[[-3], [0]])
     # tensordot give img in (sample, H, W, C) or (H, W, C)
     # we normalize and rotate for the sake of consistency with input
-    if len(img_array_rgb.shape) == 4:
-        norm_rgb = channel_rgb_weight.sum(axis=0).reshape(1, 1, 1, -1)
-        norm_rgb = np.where(norm_rgb > 1, norm_rgb, 1)
-        img_array_rgb = (img_array_rgb / norm_rgb).transpose(0, 3, 1, 2)
-    else:
-        norm_rgb = channel_rgb_weight.sum(axis=0).reshape(1, 1, -1)
-        norm_rgb = np.where(norm_rgb > 1, norm_rgb, 1)
-        img_array_rgb = (img_array_rgb / norm_rgb).transpose(2, 0, 1)
+    norm_rgb = np.maximum(channel_rgb_weight.sum(axis=0), np.ones(3))
+    img_array_rgb = np.moveaxis(img_array_rgb / norm_rgb, -1, -3)
     return img_array_rgb.clip(0, 1) # to ensure correct normalisation
 
-# filter out low quality image
+
 def plot_img(img_array, label_array, channel, size=4, fig_name="multiple_cells_small_crop", fig_directory=Path("./figures")):
     rng = np.random.default_rng(seed=42)
     choice = rng.choice(img_array.shape[0], size=size*size, replace=False)
     fig, axis = plt.subplots(size, size, figsize=(5 * size, 5 * size))
     axis = axis.flatten()
     for ax, i in zip(axis, choice):
-        ax.imshow(channel_to_rgb(img_array[i], channel).transpose(1, 2 ,0))
+        img_to_plot = channel_to_rgb(img_array[i], channel)
+        ax.imshow(img_to_plot.transpose(1, 2 ,0))
         ax.set_axis_off()
         ax.set_title(f"class: {label_array[i]}")
     fig.savefig(fig_directory / fig_name)
     plt.close()
 
-plot_img(img_flat_crop, labels_flat_crop, channel=channel, size=4, fig_name="multiple_cells_small_crop", fig_directory=fig_directory)
+plot_img(img_flat_crop, labels_flat_crop, channel=channel, size=6,
+         fig_name="multiple_cells_small_crop_norm_big_img", fig_directory=fig_directory)
+
+## filter out low quality image
+# a) try blob detection
+
+
+img_rgb = channel_to_rgb(img_flat_crop, channel)
+img_gray = rgb2gray(np.moveaxis(img_rgb, -3, -1))
+
+img_gray_dna = img_flat_crop[:, 1]
+
+def blob_log_compute(img, **kwargs):
+    blob = blob_log(img, **kwargs)
+    blob[:, 2] = blob[: , 2] * np.sqrt(2)
+    return blob
+
+with ThreadPool(cpu_count()) as thread:
+    blobs_log = list(thread.map(partial(blob_log_compute, min_sigma=5, max_sigma=50, num_sigma=10, threshold=0.05), img_gray))
+
+with ThreadPool(cpu_count()) as thread:
+    blobs_log_dna = list(thread.map(partial(blob_log_compute, min_sigma=5, max_sigma=50, num_sigma=10, threshold=0.05), img_gray_dna))
+
+def plot_img_blob(img_array, blob_list, label_array, channel, size=4, fig_name="multiple_cells_small_crop", fig_directory=Path("./figures")):
+    rng = np.random.default_rng(seed=42)
+    choice = rng.choice(img_array.shape[0], size=size*size, replace=False)
+    fig, axis = plt.subplots(size, size, figsize=(5 * size, 5 * size))
+    axis = axis.flatten()
+    for ax, i in zip(axis, choice):
+        img_to_plot = channel_to_rgb(img_array[i], channel)
+        # img_gray = rgb2gray(np.moveaxis(img_to_plot, -3, -1))
+        # ax.imshow(img_gray)
+        ax.imshow(img_to_plot.transpose(1, 2 ,0))
+        for blob in blob_list[i]:
+            y, x, r = blob
+            c = plt.Circle((x, y), r, color="red", linewidth=2, fill=False)
+            ax.add_patch(c)
+        ax.set_axis_off()
+        ax.set_title(f"class: {label_array[i]}")
+    fig.savefig(fig_directory / fig_name)
+    plt.close()
+
+plot_img_blob(img_flat_crop[:, 1:2], blobs_log_dna, labels_flat_crop, channel=channel[1:2], size=12,
+         fig_name="multiple_cells_small_crop_norm_big_img_blob_log_dna", fig_directory=fig_directory)
+
+
+def cumulative_circle_area_numpy(circle_data, square_size=128):
+    """
+    Compute the cumulative area of circles intersecting with a square using NumPy.
+
+    Parameters:
+    - circle_data: 2D array where each row is [x, y, radius].
+    - square_size: Size of the square (default is 128x128).
+
+    Returns:
+    - Cumulative area of all circles intersecting the square.
+    """
+    # Create a grid of points representing the square
+    x_grid, y_grid = np.ogrid[:square_size, :square_size]
+
+    # Expand circle parameters for vectorized operations
+    x_centers = circle_data[:, 0][:, np.newaxis, np.newaxis]
+    y_centers = circle_data[:, 1][:, np.newaxis, np.newaxis]
+    radii = circle_data[:, 2][:, np.newaxis, np.newaxis]
+
+    # Compute squared distances from the grid to each circle center
+    distance_squared = (x_grid - x_centers)**2 + (y_grid - y_centers)**2
+
+    # Create masks for points within each circle
+    circle_masks = distance_squared <= radii**2
+
+    # Sum up areas for all circles
+    # Each `True` in the mask corresponds to 1 unit of area
+    total_area = np.sum(np.sum(circle_masks, axis=0).clip(0, 1)) / (square_size ** 2)
+    return total_area
+
+with ThreadPool(cpu_count()) as thread:
+    blob_log_dna_area = np.stack(list(thread.map(partial(cumulative_circle_area_numpy,square_size=128), blobs_log_dna)))[:, None]
+
+
+def plot_feat_distrib_per_class(img_feat, label_array, channel,
+                                bins=30,
+                                fig_name="feat_distribution_per_class_per_channel",
+                                fig_directory=Path("./figures")):
+    img_feat_per_class = list(
+        map(lambda y: img_feat[label_array == y].T,
+            np.unique(label_array)))
+
+    map_channel_color = {
+        "AGP": "#FF7F00", #"#FFA500", # Orange
+        "DNA": "#0000FF", # Blue
+        "ER": "#00FF00", #"#65fe08" # Green
+        "Mito": "#FF0000", # Red
+        "RNA": "#FFFF00", # Yellow
+                         }
+    # Plotting parameters
+    n_arrays = len(img_feat_per_class)
+    n_channels = len(channel)
+    fig, axes = plt.subplots(n_arrays, n_channels, figsize=(15, 10),
+                             sharex='col',  # Shared x-axis per column
+                             sharey='row',  # Shared y-axis per row
+                             constrained_layout=True,
+                             squeeze=False)
+
+    # Iterate over arrays and channels
+    for array_idx, array in enumerate(img_feat_per_class):
+        for channel_idx in range(n_channels):
+            ax = axes[array_idx, channel_idx]
+
+            # Extract data for the specific channel
+            data = array[channel_idx]
+
+            # Plot histogram using Seaborn
+            sns.histplot(data, bins=50, kde=True, ax=ax,
+                         color=map_channel_color[channel[channel_idx]],
+                         alpha=0.7)
+
+            # Titles for first row and first column
+            if array_idx == 0:
+                ax.set_title(f"Channel {channel[channel_idx]}", fontsize=10)
+            if channel_idx == 0:
+                ax.set_ylabel(f"Class {array_idx}", fontsize=10)
+
+    # Overall title for the figure
+    fig.suptitle(fig_name, fontsize=16)
+    fig.savefig(fig_directory / fig_name)
+
+
+plot_feat_distrib_per_class(blob_log_dna_area, labels_flat_crop, channel[1:2],
+                            bins=50,
+                            fig_name="blob_area_dna_distribution",
+                            fig_directory=fig_directory)
+
+
+def plot_img_blob_with_area(img_array, blob_list, label_array, channel, blob_thr=0.2, size=4, fig_name="multiple_cells_small_crop", fig_directory=Path("./figures")):
+    rng = np.random.default_rng(seed=42)
+    choice = rng.choice(img_array.shape[0], size=size*size, replace=False)
+    fig, axis = plt.subplots(size, size, figsize=(5 * size, 5 * size))
+    axis = axis.flatten()
+    for ax, i in zip(axis, choice):
+        img_to_plot = channel_to_rgb(img_array[i], channel)
+        ax.imshow(img_to_plot.transpose(1, 2 ,0))
+        blob_area = cumulative_circle_area_numpy(blob_list[i])
+        if blob_area < blob_thr:
+            ax.add_patch(mpatches.Rectangle((0,0), 128, 128, color="red", alpha=0.3))
+        for blob in blob_list[i]:
+            y, x, r = blob
+            c = plt.Circle((x, y), r, color="red", linewidth=2, fill=False)
+            ax.add_patch(c)
+        ax.set_axis_off()
+        ax.set_title(f"class: {label_array[i]} - blob_area: {blob_area:.1%}")
+    fig.savefig(fig_directory / fig_name)
+    plt.close()
+
+plot_img_blob_with_area(img_flat_crop, blobs_log_dna, labels_flat_crop, channel=channel,
+                        blob_thr=0.03, size=12,
+                        fig_name="multiple_cells_small_crop_norm_big_img_blob_log_area", fig_directory=fig_directory)
+
+# b) otsu filter
+import cv2
+size_closing = 10
+kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE,(size_closing, size_closing))
+with ThreadPool(cpu_count()) as thread:
+    otsu_filt = list(thread.map(threshold_otsu, img_gray))
+    img_otsu = (img_gray >= np.stack(otsu_filt)[:, None, None]).astype(np.float32)
+    img_otsu_open = np.stack(list(thread.map(partial(cv2.morphologyEx, op=cv2.MORPH_OPEN, kernel=kernel), img_otsu)))
+
+with ThreadPool(cpu_count()) as thread:
+    otsu_filt_dna = list(thread.map(threshold_otsu, img_gray_dna))
+    img_otsu_dna = (img_gray_dna >= np.stack(otsu_filt_dna)[:, None, None]).astype(np.float32)
+    img_otsu_open_dna = np.stack(list(thread.map(partial(cv2.morphologyEx, op=cv2.MORPH_OPEN, kernel=kernel), img_otsu_dna)))
+
+def plot_img_otsu(img_array, img_binary, label_array, channel, size=4,
+                  otsu_thr=0.05, alpha=0.2, fig_name="multiple_cells_small_crop", fig_directory=Path("./figures")):
+    rng = np.random.default_rng(seed=42)
+    choice = rng.choice(img_array.shape[0], size=size*size, replace=False)
+    fig, axis = plt.subplots(size, size, figsize=(5 * size, 5 * size))
+    axis = axis.flatten()
+    for ax, i in zip(axis, choice):
+        img_to_plot = channel_to_rgb(img_array[i], channel)
+        ax.imshow(img_to_plot.transpose(1, 2 ,0), alpha=1-alpha)
+        ax.imshow(img_binary[i], cmap="gray", alpha=alpha)
+        if (img_binary[i].sum(axis=(0,1)) / img_binary[i].size) < otsu_thr:
+            ax.add_patch(mpatches.Rectangle((0,0), 128, 128, color="red", alpha=0.3))
+        ax.set_axis_off()
+        ax.set_title(f"class: {label_array[i]}")
+    fig.savefig(fig_directory / fig_name)
+    plt.close()
+
+plot_img_otsu(img_flat_crop, img_otsu_open, labels_flat_crop, channel=channel, size=12,
+              otsu_thr=0.05,
+              alpha=0.2,
+              fig_name="multiple_cells_small_crop_norm_big_img_otsu", fig_directory=fig_directory)
+
+plot_img_otsu(img_flat_crop, img_otsu_open_dna, labels_flat_crop, channel=channel, size=12,
+              otsu_thr=0.03,
+              alpha=0.2,
+              fig_name="multiple_cells_small_crop_norm_big_img_otsu", fig_directory=fig_directory)
+
+plot_feat_distrib_per_class((img_otsu_open.sum(axis=(1,2)) / img_otsu_open[0].size)[:, None],
+                            labels_flat_crop,
+                            channel[1:2],
+                            bins=50,
+                            fig_name="otsu_area_distribution",
+                            fig_directory=fig_directory)
+
+plot_img(img_flat_crop, labels_flat_crop, channel=channel, size=12,
+         fig_name="multiple_cells_small_crop_norm_big_img", fig_directory=fig_directory)
+
+
+# c) try shannon_entropy
+img_integer = (img_flat_crop * 255).astype(np.int64)#.astype(np.int64)
+img_shannon = np.stack(list(map(lambda img_ch: np.stack(
+    list(map(shannon_entropy, img_ch))),
+                                img_integer)))
+
+plot_feat_distrib_per_class(img_shannon, labels_flat_crop, channel,
+                            bins=30,
+                            fig_name="shannon_distribution_per_class_per_channel",
+                            fig_directory=fig_directory)
+
+
+def plot_img_with_shannon(img_array, img_shannon, label_array, channel, shan_thr=0.2, size=4, fig_name="multiple_cells_small_crop", fig_directory=Path("./figures")):
+    rng = np.random.default_rng(seed=42)
+    choice = rng.choice(img_array.shape[0], size=size*size, replace=False)
+    fig, axis = plt.subplots(size, size, figsize=(5 * size, 5 * size))
+    axis = axis.flatten()
+    for ax, i in zip(axis, choice):
+        img_to_plot = channel_to_rgb(img_array[i], channel)
+        ax.imshow(img_to_plot.transpose(1, 2 ,0))
+        if img_shannon[i] < shan_thr:
+            ax.add_patch(mpatches.Rectangle((0,0), 128, 128, color="red", alpha=0.3))
+        ax.set_axis_off()
+        ax.set_title(f"class: {label_array[i]} - sha_area: {img_shannon[i]:.2f}")
+    fig.savefig(fig_directory / fig_name)
+    plt.close()
+
+plot_img_with_shannon(img_flat_crop,
+                        img_shannon,
+                        labels_flat_crop, channel=channel[1:2], shan_thr=0.1, size=12,
+         fig_name="multiple_cells_small_crop_norm_big_img_shanon", fig_directory=fig_directory)
+
+# d) black pixel detection
+
+
+
+# e) white pixel detection
+
 
 # store = zarr.DirectoryStore(Path("image_active_dataset/imgs_labels_groups.zarr"))
 # root = zarr.group(store=store)
