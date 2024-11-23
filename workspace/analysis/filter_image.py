@@ -24,6 +24,7 @@ from skimage.feature import (  # blob_dog is a faster approximation of blob_log
 from skimage.filters import threshold_otsu
 from skimage.util import img_as_float64, img_as_ubyte
 from skimage.util.shape import view_as_windows
+from sklearn.preprocessing import LabelEncoder
 
 import custom_dataset
 
@@ -239,7 +240,7 @@ def plot_img_blob(img_array, blob_list, label_array, channel,
         blob_area = cumulative_circle_area_numpy(blob_list[i])
         if blob_thr is not None:
             if blob_area < blob_thr:
-                ax.add_patch(mpatches.Rectangle((0,0), 128, 128, color="red", alpha=0.3))
+                ax.add_patch(mpatches.Rectangle((0,0), img_to_plot.shape[-2], img_to_plot.shape[-2], color="red", alpha=0.3))
         for blob in blob_list[i]:
             y, x, r = blob
             c = plt.Circle((x, y), r, color="red", linewidth=2, fill=False)
@@ -264,7 +265,7 @@ def plot_img_otsu(img_array, img_binary, label_array, channel, size=4,
         area = (img_binary[i].sum(axis=(0,1)) / img_binary[i].size)
         if otsu_thr is not None:
             if area < otsu_thr:
-                ax.add_patch(mpatches.Rectangle((0,0), 128, 128, color="red", alpha=0.3))
+                ax.add_patch(mpatches.Rectangle((0,0), img_to_plot.shape[-2], img_to_plot.shape[-2], color="red", alpha=0.3))
             ax.set_axis_off()
         ax.set_title(f"class: {label_array[i]} - otsu_area: {area:.2%} ")
     fig.savefig(fig_directory / fig_name)
@@ -459,7 +460,9 @@ labels, groups = tuple((metadata
         .values()))
 
 #### Crop img in small square, clip normalize them and flatten window - plot example of images
-img_stack_window = window_img(img_list_stack, wanted_crop=128, num_crop=8) # axis = (sample, row_grid, column_grid, channel, H, W)
+wanted_crop = 128
+num_crop = 8
+img_stack_window = window_img(img_list_stack, wanted_crop=wanted_crop, num_crop=num_crop) # axis = (sample, row_grid, column_grid, channel, H, W)
 # NB: (1, 2, 4, 5) : normalise per image of origin and (4, 5) : normalise per tile
 img_stack_window_norm = clip_norm_img(img_stack_window, clip=(1, 99), axis=(1, 2, 4, 5)) # clip on big image to reduce noise
 
@@ -480,7 +483,7 @@ with ThreadPool(cpu_count()) as thread:
     blobs_dna = list(thread.map(partial(blob_compute, func=blob_dog, min_sigma=5, max_sigma=25, threshold=0.1), img_gray_dna))
 
 with ThreadPool(cpu_count()) as thread:
-    blobs_dna_area = np.stack(list(thread.map(partial(cumulative_circle_area_numpy,square_size=128), blobs_dna)))[:, None]
+    blobs_dna_area = np.stack(list(thread.map(partial(cumulative_circle_area_numpy, square_size=wanted_crop), blobs_dna)))[:, None]
 
 plot_feat_distrib_per_class(blobs_dna_area, labels_flat_crop, channel[1:2],
                             bins="auto",
@@ -517,7 +520,7 @@ plot_img_otsu(img_flat_crop[:, 1:2], otsu_dna, labels_flat_crop, channel=channel
 
 ##### Combining otsu filter and blob filter
 with ThreadPool(cpu_count()) as thread:
-    blobs_dna_mask = np.stack(list(thread.map(partial(cumulative_circle_area_numpy, return_mask=True, square_size=128), blobs_dna)))
+    blobs_dna_mask = np.stack(list(thread.map(partial(cumulative_circle_area_numpy, return_mask=True, square_size=wanted_crop), blobs_dna)))
 
 blob_otsu_dna = (blobs_dna_mask * otsu_dna).clip(0, 1)
 blob_otsu_dna_area = (blob_otsu_dna.sum(axis=(1,2)) / blob_otsu_dna[0].size)[:, None]
@@ -580,6 +583,12 @@ plot_img(img_filt_contrast, labels_filt, channel=channel, size=12,
          fig_name="multiple_cells_small_crop_norm_big_img_filt_contrasted",
          fig_directory=fig_directory,
          seed=12)
+
+# le = LabelEncoder()
+# le.fit(groups_filt)
+# groups_filt_code = le.transform(groups_filt)
+# groups_filt_code_count = np.bincount(le.transform(groups_filt)) / len(groups_filt_code)
+
 
 # store = zarr.DirectoryStore(Path("image_active_dataset/imgs_labels_groups.zarr"))
 # root = zarr.group(store=store)
