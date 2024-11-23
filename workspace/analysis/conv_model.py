@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
+import numpy as np
 from typing import Literal, Optional, Tuple
 
 class VGG(nn.Module):
@@ -50,7 +51,12 @@ class VGG(nn.Module):
 
 
 class VGG_ch(nn.Module):
-    def __init__(self, img_depth, img_size, lab_dim, conv_n_ch, n_conv_block, n_conv_list, n_lin_block, p_dropout):
+    def __init__(self, img_depth, img_size, lab_dim, conv_n_ch, n_conv_block,
+                 n_conv_list, n_lin_block, p_dropout,
+                 max_ch=None):
+        """
+        max_ch is the maximum number of channel in the convolutional network. If None is provided then no max.
+        """
         super().__init__()
         self.img_depth = img_depth
         self.img_size = img_size
@@ -60,12 +66,13 @@ class VGG_ch(nn.Module):
         self.n_conv_list = n_conv_list
         self.n_lin_block = n_lin_block
         self.conv_n_ch = conv_n_ch
-        self.fc_dim = self.conv_n_ch * (2 ** (self.n_conv_block - 1)) * ((self.img_size // (2 ** self.n_conv_block)) ** 2)
+        self.max_ch = max_ch if (max_ch is not None) else np.inf
+        self.fc_dim = np.min((self.conv_n_ch * (2 ** (self.n_conv_block - 1)), self.max_ch)) * ((self.img_size // (2 ** self.n_conv_block)) ** 2)
         # self.relu = nn.ReLU() # Need to redefine relu every time so it work with DeepLigt, so instead of self.relu, do nn.ReLU every time.
         self.drop = nn.Dropout(p=p_dropout)
         self.sequence = nn.Sequential(
-                        *[self.conv_block((self.conv_n_ch * (2 ** (i-1)) if i != 0 else self.img_depth),
-                                          (self.conv_n_ch * (2 ** i) if i!=0 else self.conv_n_ch),
+                        *[self.conv_block(np.min((self.conv_n_ch * (2 ** (i-1)), self.max_ch)) if i != 0 else self.img_depth),
+                                          np.min((self.conv_n_ch * (2 ** i), self.max_ch)) if i!=0 else self.conv_n_ch),
                                           self.n_conv_list[i])
                                      for i in range(self.n_conv_block)],
                         nn.Flatten(),
