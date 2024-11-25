@@ -103,6 +103,24 @@ To do so, the Validation set should be a split of the test set in half. Indeed t
 ***** If performance are not so great, go back on profiles, implement the more complex GAN using StarGan2. And try again on images.
 ***** If performance are not so great, try using Diffusion model.
 ***** If performance are not so great, the task might not be feasible with our current dataset: try using a different labelisation, different samples and so on.
+
+***
+
+
+*** <2024-11-25 Mon>
+**** What has been done so far:
+**** Current Problem:
+**** Next steps:
+***** Trying with no filtering on the 256 images.
+The goal is to see if the background has a specific signatures which actually help filtering things.
+***** Testing classification on compounds instead of on MoA.
+Here some MoA are poorly classified from fold to fold. The intuition is that it is because compounds are too different with their respective MoA so we need to see if it wouldn't be easier to classify on compounds rather on MoA. Maybe some compound are unclassifiable (we should remove them) or eventually too different of MoA. But maybe the MoA labellisation is just not meaningful and it is actually quiet easy to classify compounds with each others. Then we would be able to retrieve the minimum mask and tells the difference in those mask within a same mechanism of action.
+***** Do an interactive interface on the 448 classifiers to see the embedding retrieved by the the classifier on the 448 images.
+We could see how some image clusters and eventually investigates whether images with large amount of black pixels clusters together. This would help investigates this drop in accuracy when retrieving smaller tile. (256 or 128).
+***** Why not doing an auto-encoders on small tile of images (256 or 128) to get features that are relevant to each images.
+On a PCA plot we could investigate the clustering of images and see how too similar or different they are from image to image.
+***** Instead of working on the target2 subset, let's go with the big dataset. Then do mAP, and balancing algorithms.
+
 * Resources
 * Server (moby)
 Follow [[https://github.com/broadinstitute/monorepo/tree/2d3fc5a14e3eabe8a2bd7ce6b124a2c11825df5d/management/servers/onboarding.org][these]] instructions to set up access to the server.

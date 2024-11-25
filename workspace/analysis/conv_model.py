@@ -71,8 +71,8 @@ class VGG_ch(nn.Module):
         # self.relu = nn.ReLU() # Need to redefine relu every time so it work with DeepLigt, so instead of self.relu, do nn.ReLU every time.
         self.drop = nn.Dropout(p=p_dropout)
         self.sequence = nn.Sequential(
-                        *[self.conv_block(np.min((self.conv_n_ch * (2 ** (i-1)), self.max_ch)) if i != 0 else self.img_depth),
-                                          np.min((self.conv_n_ch * (2 ** i), self.max_ch)) if i!=0 else self.conv_n_ch),
+                        *[self.conv_block((np.min((self.conv_n_ch * (2 ** (i-1)), self.max_ch)) if i != 0 else self.img_depth),
+                                          (np.min((self.conv_n_ch * (2 ** i), self.max_ch)) if i!=0 else self.conv_n_ch),
                                           self.n_conv_list[i])
                                      for i in range(self.n_conv_block)],
                         nn.Flatten(),

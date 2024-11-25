@@ -148,11 +148,12 @@ class LightningModelV2(L.LightningModule):
         self.train_accuracy.update(output, target)
         self.train_rocauc.update(output, target)
         self.train_f1.update(output, target)
-        if (self.current_epoch % 5 == 0 and self.current_epoch > 0) or (self.current_epoch == self.max_epoch - 1):
+        if (self.current_epoch % 2 == 0 and self.current_epoch > 0) or (self.current_epoch == self.max_epoch - 1):
             self.train_confmat.update(output, target)
 
         # Log the loss
-        self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
+        self.log("train_loss", loss, on_step=True, #on_epoch=True,
+                 prog_bar=True, logger=True, sync_dist=True)
 
         return loss
 
@@ -169,11 +170,12 @@ class LightningModelV2(L.LightningModule):
         self.val_accuracy.update(output, target)
         self.val_rocauc.update(output, target)
         self.val_f1.update(output, target)
-        if (self.current_epoch % 5 == 0 and self.current_epoch > 0) or (self.current_epoch == self.max_epoch - 1):
+        if (self.current_epoch % 2 == 0 and self.current_epoch > 0) or (self.current_epoch == self.max_epoch - 1):
             self.val_confmat.update(output, target)
 
         # Log the loss
-        self.log("val_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
+        self.log("val_loss", loss, on_step=True, #on_epoch=True,
+                 prog_bar=True, logger=True, sync_dist=True)
 
         return loss
 
@@ -194,16 +196,16 @@ class LightningModelV2(L.LightningModule):
 
     def on_train_epoch_end(self):
         # Log the metric objects (this computes the final value)
-        self.log("train_acc", self.train_accuracy.compute(), on_epoch=True, sync_dist=True)
-        self.log("train_roc", self.train_rocauc.compute(), on_epoch=True, sync_dist=True)
-        self.log("train_f1", self.train_f1.compute(), on_epoch=True, sync_dist=True)
+        self.log("train_acc", self.train_accuracy.compute(), on_epoch=True)# sync_dist=True)
+        self.log("train_roc", self.train_rocauc.compute(), on_epoch=True)#, sync_dist=True)
+        self.log("train_f1", self.train_f1.compute(), on_epoch=True)#, sync_dist=True)
 
         # Reset metrics for the next epoch
         self.train_accuracy.reset()
         self.train_rocauc.reset()
         self.train_f1.reset()
 
-        if (self.current_epoch % 5 == 0 and self.current_epoch > 0) or (self.current_epoch == self.max_epoch - 1):
+        if (self.current_epoch % 2 == 0 and self.current_epoch > 0) or (self.current_epoch == self.max_epoch - 1):
             fig_, ax_ = self.train_confmat.plot()
             if self.trainer.is_global_zero:
                 self.logger.experiment.add_figure("train_confmat", fig_, self.current_epoch)
@@ -212,16 +214,16 @@ class LightningModelV2(L.LightningModule):
 
     def on_validation_epoch_end(self):
         # Log the metric objects (this computes the final value)
-        self.log("val_acc", self.val_accuracy.compute(), on_epoch=True, sync_dist=True)
-        self.log("val_roc", self.val_rocauc.compute(), on_epoch=True, sync_dist=True)
-        self.log("val_f1", self.val_f1.compute(), on_epoch=True, sync_dist=True)
+        self.log("val_acc", self.val_accuracy.compute(), on_epoch=True)#, sync_dist=True)
+        self.log("val_roc", self.val_rocauc.compute(), on_epoch=True)#, sync_dist=True)
+        self.log("val_f1", self.val_f1.compute(), on_epoch=True)#, sync_dist=True)
 
         # Reset metrics for the next epoch
         self.val_accuracy.reset()
         self.val_rocauc.reset()
         self.val_f1.reset()
 
-        if (self.current_epoch % 5 == 0 and self.current_epoch > 0) or (self.current_epoch == self.max_epoch - 1):
+        if (self.current_epoch % 2 == 0 and self.current_epoch > 0) or (self.current_epoch == self.max_epoch - 1):
             fig_, ax_ = self.val_confmat.plot()
             if self.trainer.is_global_zero:
                 self.logger.experiment.add_figure("val_confmat", fig_, self.current_epoch)
