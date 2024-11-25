@@ -6,7 +6,7 @@ from itertools import groupby
 from typing import Optional
 
 class ImageDataset(Dataset):
-    def __init__(self, imgs_path, channel, fold_idx, img_transform=None, label_transform=None):
+    def __init__(self, imgs_path, channel, fold_idx, img_transform=None, label_transform=None, img_key="imgs"):
         super().__init__()
         self.imgs_zarr = zarr.open(imgs_path)
         self.imgs_path = imgs_path
@@ -16,12 +16,13 @@ class ImageDataset(Dataset):
             self.fold_idx = list(range(len(self.imgs_zarr["labels"])))
         self.img_transform = img_transform
         self.label_transform = label_transform
+        self.img_key = img_key
 
     def __len__(self):
         return len(self.fold_idx)
 
     def __getitem__(self, idx):
-        imgs = self.imgs_zarr["imgs"].oindex[self.fold_idx[idx], self.channel]
+        imgs = self.imgs_zarr[self.img_key].oindex[self.fold_idx[idx], self.channel]
         labels = self.imgs_zarr["labels"].oindex[self.fold_idx[idx]]
         if self.img_transform is not None:
             imgs = self.img_transform(imgs)
@@ -56,7 +57,7 @@ class ImageDataset_all_info(Dataset):
         return imgs, labels, groups, indices
 
 class ImageDataset_Ref(Dataset):
-    def __init__(self, imgs_path, channel, fold_idx, img_transform=None, label_transform=None, seed=42):
+    def __init__(self, imgs_path, channel, fold_idx, img_transform=None, label_transform=None, seed=42, img_key="imgs"):
         super().__init__()
         self.imgs_zarr = zarr.open(imgs_path)
         self.imgs_path = imgs_path
@@ -67,6 +68,7 @@ class ImageDataset_Ref(Dataset):
         self.imgs_idx, self.imgs2_idx = self._make_dataset(seed)
         self.img_transform = img_transform
         self.label_transform = label_transform
+        self.img_key = img_key
 
     def _make_dataset(self, seed):
         labels = self.imgs_zarr["labels"].oindex[self.fold_idx]
@@ -82,8 +84,8 @@ class ImageDataset_Ref(Dataset):
         return len(self.fold_idx)
 
     def __getitem__(self, idx):
-        imgs = self.imgs_zarr["imgs"].oindex[self.imgs_idx[idx], self.channel]
-        imgs2 = self.imgs_zarr["imgs"].oindex[self.imgs2_idx[idx], self.channel]
+        imgs = self.imgs_zarr[self.img_key].oindex[self.imgs_idx[idx], self.channel]
+        imgs2 = self.imgs_zarr[self.img_key].oindex[self.imgs2_idx[idx], self.channel]
         labels = self.imgs_zarr["labels"].oindex[self.imgs_idx[idx]]
         if self.img_transform is not None:
             imgs = self.img_transform(imgs)

@@ -425,6 +425,7 @@ def get_mask_thr(feat, labels, num_bin=1):
 """
 # Execute above code  #####################################################################
 """
+
 #### Fetch image and stack each channel
 metadata = pl.read_csv("target2_eq_moa2_active_metadata")
 plot_table_id_to_pert(metadata, fig_name="moa_id_to_pert", fig_directory=fig_directory)
@@ -460,8 +461,8 @@ labels, groups = tuple((metadata
         .values()))
 
 #### Crop img in small square, clip normalize them and flatten window - plot example of images
-wanted_crop = 128
-num_crop = 8
+wanted_crop = 256#128
+num_crop = 4 #8
 img_stack_window = window_img(img_list_stack, wanted_crop=wanted_crop, num_crop=num_crop) # axis = (sample, row_grid, column_grid, channel, H, W)
 # NB: (1, 2, 4, 5) : normalise per image of origin and (4, 5) : normalise per tile
 img_stack_window_norm = clip_norm_img(img_stack_window, clip=(1, 99), axis=(1, 2, 4, 5)) # clip on big image to reduce noise
@@ -471,171 +472,125 @@ img_flat_crop = img_stack_window_norm.reshape(-1, *img_stack_window_norm.shape[-
 labels_flat_crop = np.repeat(labels, len(img_flat_crop) // len(labels))
 groups_flat_crop = np.repeat(groups, len(img_flat_crop) // len(labels))
 
-# plot rgb image
-plot_img(img_flat_crop, labels_flat_crop, channel=channel, size=12,
-         fig_name="multiple_cells_small_crop_norm_big_img", fig_directory=fig_directory)
+# # plot rgb image
+# plot_img(img_flat_crop, labels_flat_crop, channel=channel, size=12,
+#          fig_name="multiple_cells_256_crop_norm_big_img", fig_directory=fig_directory)
 
-#### Filter out low quality image
-##### Blob detection on dna channel (dna channel is relevant to nucleus so is a proxi for precise cell detection)
-img_gray_dna = img_as_ubyte(img_flat_crop[:, 1])
+# #### Filter out low quality image
+# ##### Blob detection on dna channel (dna channel is relevant to nucleus so is a proxi for precise cell detection)
+# img_gray_dna = img_as_ubyte(img_flat_crop[:, 1])
 
-with ThreadPool(cpu_count()) as thread:
-    blobs_dna = list(thread.map(partial(blob_compute, func=blob_dog, min_sigma=5, max_sigma=25, threshold=0.1), img_gray_dna))
+# with ThreadPool(cpu_count()) as thread:
+#     blobs_dna = list(thread.map(partial(blob_compute, func=blob_dog, min_sigma=5, max_sigma=25, threshold=0.1), img_gray_dna))
 
-with ThreadPool(cpu_count()) as thread:
-    blobs_dna_area = np.stack(list(thread.map(partial(cumulative_circle_area_numpy, square_size=wanted_crop), blobs_dna)))[:, None]
+# with ThreadPool(cpu_count()) as thread:
+#     blobs_dna_area = np.stack(list(thread.map(partial(cumulative_circle_area_numpy, square_size=wanted_crop), blobs_dna)))[:, None]
 
-plot_feat_distrib_per_class(blobs_dna_area, labels_flat_crop, channel[1:2],
-                            bins="auto",
-                            thr=0.03,
-                            fig_name="blob_area_dna_distribution",
-                            fig_directory=fig_directory)
+# plot_feat_distrib_per_class(blobs_dna_area, labels_flat_crop, channel[1:2],
+#                             bins="auto",
+#                             thr=0.03,
+#                             fig_name="blob_area_dna_256_distribution",
+#                             fig_directory=fig_directory)
 
-plot_img_blob(img_flat_crop[:, 1:2], blobs_dna, labels_flat_crop, channel=channel[1:2],
-              blob_thr=None, size=12,
-              fig_name="multiple_cells_small_crop_norm_big_img_blob", fig_directory=fig_directory)
+# plot_img_blob(img_flat_crop[:, 1:2], blobs_dna, labels_flat_crop, channel=channel[1:2],
+#               blob_thr=None, size=12,
+#               fig_name="multiple_cells_256_crop_norm_big_img_blob", fig_directory=fig_directory)
 
-##### Otsu filter with morphological opening to remove noise again on dna channel
-size_closing = 10
-kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE,(size_closing, size_closing))
+# ##### Otsu filter with morphological opening to remove noise again on dna channel
+# size_closing = 10
+# kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE,(size_closing, size_closing))
 
-with ThreadPool(cpu_count()) as thread:
-    otsu_filt_dna = list(thread.map(threshold_otsu, img_gray_dna))
-    otsu_dna = (img_gray_dna >= np.stack(otsu_filt_dna)[:, None, None]).astype(np.float32)
-    otsu_dna = np.stack(list(thread.map(partial(cv2.morphologyEx, op=cv2.MORPH_OPEN, kernel=kernel), otsu_dna)))
+# with ThreadPool(cpu_count()) as thread:
+#     otsu_filt_dna = list(thread.map(threshold_otsu, img_gray_dna))
+#     otsu_dna = (img_gray_dna >= np.stack(otsu_filt_dna)[:, None, None]).astype(np.float32)
+#     otsu_dna = np.stack(list(thread.map(partial(cv2.morphologyEx, op=cv2.MORPH_OPEN, kernel=kernel), otsu_dna)))
 
-otsu_dna_area = (otsu_dna.sum(axis=(1,2)) / otsu_dna[0].size)[:, None]
-plot_feat_distrib_per_class(otsu_dna_area,
-                            labels_flat_crop,
-                            channel[1:2],
-                            thr=0.02,
-                            bins="auto",
-                            fig_name="otsu_area_distribution",
-                            fig_directory=fig_directory)
+# otsu_dna_area = (otsu_dna.sum(axis=(1,2)) / otsu_dna[0].size)[:, None]
+# plot_feat_distrib_per_class(otsu_dna_area,
+#                             labels_flat_crop,
+#                             channel[1:2],
+#                             thr=0.02,
+#                             bins="auto",
+#                             fig_name="otsu_area_256_distribution",
+#                             fig_directory=fig_directory)
 
-plot_img_otsu(img_flat_crop[:, 1:2], otsu_dna, labels_flat_crop, channel=channel[1:2], size=12,
-              otsu_thr=None,
-              alpha=0.2,
-              fig_name="multiple_cells_small_crop_norm_big_img_otsu", fig_directory=fig_directory)
+# plot_img_otsu(img_flat_crop[:, 1:2], otsu_dna, labels_flat_crop, channel=channel[1:2], size=12,
+#               otsu_thr=None,
+#               alpha=0.2,
+#               fig_name="multiple_cells_256_crop_norm_big_img_otsu", fig_directory=fig_directory)
 
-##### Combining otsu filter and blob filter
-with ThreadPool(cpu_count()) as thread:
-    blobs_dna_mask = np.stack(list(thread.map(partial(cumulative_circle_area_numpy, return_mask=True, square_size=wanted_crop), blobs_dna)))
+# ##### Combining otsu filter and blob filter
+# with ThreadPool(cpu_count()) as thread:
+#     blobs_dna_mask = np.stack(list(thread.map(partial(cumulative_circle_area_numpy, return_mask=True, square_size=wanted_crop), blobs_dna)))
 
-blob_otsu_dna = (blobs_dna_mask * otsu_dna).clip(0, 1)
-blob_otsu_dna_area = (blob_otsu_dna.sum(axis=(1,2)) / blob_otsu_dna[0].size)[:, None]
+# blob_otsu_dna = (blobs_dna_mask * otsu_dna).clip(0, 1)
+# blob_otsu_dna_area = (blob_otsu_dna.sum(axis=(1,2)) / blob_otsu_dna[0].size)[:, None]
 
-plot_feat_distrib_per_class(blob_otsu_dna_area,
-                            labels_flat_crop,
-                            channel[1:2],
-                            thr=0.02,
-                            bins="auto",
-                            fig_name="blob_otsu_area_distribution",
-                            fig_directory=fig_directory)
+# plot_feat_distrib_per_class(blob_otsu_dna_area,
+#                             labels_flat_crop,
+#                             channel[1:2],
+#                             thr=0.02,
+#                             bins="auto",
+#                             fig_name="blob_otsu_area_256_distribution",
+#                             fig_directory=fig_directory)
 
-plot_img_otsu(img_flat_crop[:, 1:2], blob_otsu_dna, labels_flat_crop, channel=channel[1:2], size=12,
-              otsu_thr=None,
-              alpha=0.2,
-              fig_name="multiple_cells_small_crop_norm_big_img_blob_otsu", fig_directory=fig_directory)
+# plot_img_otsu(img_flat_crop[:, 1:2], blob_otsu_dna, labels_flat_crop, channel=channel[1:2], size=12,
+#               otsu_thr=None,
+#               alpha=0.2,
+#               fig_name="multiple_cells_256_crop_norm_big_img_blob_otsu", fig_directory=fig_directory)
 
-##### Show joint distribution of each features obtained
-plot_joint_distribution(blobs_dna_area[:,0], otsu_dna_area[:,0], labels_flat_crop,
-                        x_name="blob area", y_name="otsu area",
-                        fig_name="joint_distribution_blobs_vs_otsu_area",
-                        fig_directory=Path("./figures"),
-                        kind='scatter', height=10)
+# ##### Show joint distribution of each features obtained
+# plot_joint_distribution(blobs_dna_area[:,0], otsu_dna_area[:,0], labels_flat_crop,
+#                         x_name="blob area", y_name="otsu area",
+#                         fig_name="joint_256_distribution_blobs_vs_otsu_area",
+#                         fig_directory=Path("./figures"),
+#                         kind='scatter', height=10)
 
-plot_joint_distribution(blobs_dna_area[:,0], blob_otsu_dna_area[:,0], labels_flat_crop,
-                        x_name="blob area", y_name="blob_otsu area",
-                        fig_name="joint_distribution_blobs_vs_blob_otsu_area",
-                        fig_directory=Path("./figures"),
-                        kind='scatter', height=10)
+# plot_joint_distribution(blobs_dna_area[:,0], blob_otsu_dna_area[:,0], labels_flat_crop,
+#                         x_name="blob area", y_name="blob_otsu area",
+#                         fig_name="joint_256_distribution_blobs_vs_blob_otsu_area",
+#                         fig_directory=Path("./figures"),
+#                         kind='scatter', height=10)
 
-plot_joint_distribution(blob_otsu_dna_area[:,0], otsu_dna_area[:,0], labels_flat_crop,
-                        x_name="blob_otsu area", y_name="otsu area",
-                        fig_name="joint_distribution_blob_otsu_vs_otsu_area",
-                        fig_directory=Path("./figures"),
-                        kind='scatter', height=10)
+# plot_joint_distribution(blob_otsu_dna_area[:,0], otsu_dna_area[:,0], labels_flat_crop,
+#                         x_name="blob_otsu area", y_name="otsu area",
+#                         fig_name="joint_256_distribution_blob_otsu_vs_otsu_area",
+#                         fig_directory=Path("./figures"),
+#                         kind='scatter', height=10)
 
 #### Filter out low quality images based on the blob_otsu_dna_area feature.
-filter_mask = get_mask_thr(blob_otsu_dna_area, labels_flat_crop, num_bin=2)
-img_filt = img_flat_crop[filter_mask]
-labels_filt = labels_flat_crop[filter_mask]
-groups_filt = groups_flat_crop[filter_mask]
+# filter_mask = get_mask_thr(blob_otsu_dna_area, labels_flat_crop, num_bin=2)
+img_filt = img_flat_crop#[filter_mask]
+labels_filt = labels_flat_crop#[filter_mask]
+groups_filt = groups_flat_crop#[filter_mask]
 
-plot_img(img_filt, labels_filt, channel=channel, size=12,
-         fig_name="multiple_cells_small_crop_norm_big_img_filt",
-         fig_directory=fig_directory,
-         seed=12)
+# plot_img(img_filt, labels_filt, channel=channel, size=12,
+#          fig_name="multiple_cells_256_crop_norm_big_img_filt",
+#          fig_directory=fig_directory,
+#          seed=12)
 
 
 #### Enhance contrast using CLAHE Histogram equalization
-clip_limit = 2
-tile_grid_size = (8, 8)
-clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=tile_grid_size)
+# clip_limit = 2
+# tile_grid_size = (8, 8)
+# clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=tile_grid_size)
 
-with ThreadPool(cpu_count()) as thread:
-    img_filt_contrast = np.stack(list(
-        thread.map(lambda img: np.stack(list(map(lambda img_ch: img_as_float64(clahe.apply(img_as_ubyte(img_ch))), img))),
-                   img_filt)))
+# with ThreadPool(cpu_count()) as thread:
+#     img_filt_contrast = np.stack(list(
+#         thread.map(lambda img: np.stack(list(map(lambda img_ch: img_as_float64(clahe.apply(img_as_ubyte(img_ch))), img))),
+#                    img_filt)))
 
-plot_img(img_filt_contrast, labels_filt, channel=channel, size=12,
-         fig_name="multiple_cells_small_crop_norm_big_img_filt_contrasted",
-         fig_directory=fig_directory,
-         seed=12)
+# plot_img(img_filt_contrast, labels_filt, channel=channel, size=12,
+#          fig_name="multiple_cells_256_crop_norm_big_img_filt_contrasted",
+#          fig_directory=fig_directory,
+#          seed=12)
 
-# le = LabelEncoder()
-# le.fit(groups_filt)
-# groups_filt_code = le.transform(groups_filt)
-# groups_filt_code_count = np.bincount(le.transform(groups_filt)) / len(groups_filt_code)
-
-
-# store = zarr.DirectoryStore(Path("image_active_dataset/imgs_labels_groups.zarr"))
-# root = zarr.group(store=store)
-# # Save datasets into the group
-# root.create_dataset('imgs', data=small_image, overwrite=True, chunks=(1, 1, *small_image.shape[2:]))
-# root.create_dataset('labels', data=small_labels, overwrite=True, chunks=1)
-# root.create_dataset('groups', data=small_groups, dtype=object, object_codec=numcodecs.JSON(), overwrite=True, chunks=1)
-
-# # select device
-# device = ("cuda" if torch.cuda.is_available() else "cpu")
-
-# # define path for real and fake dataset
-# imgs_real_path = Path("image_active_dataset/imgs_labels_groups.zarr")
-
-# # select channel
-# channel = ["AGP","DNA", "ER"]#, "Mito"]#, "RNA"]
-# channel.sort()
-# map_channel = {ch: i for i, ch in enumerate(["AGP", "DNA", "ER", "Mito", "RNA"])}
-# id_channel = np.array([map_channel[ch] for ch in channel])
-
-
-# dataset_real = custom_dataset.ImageDataset(imgs_real_path,
-#                                            id_channel,
-#                                            fold_idx=None,
-#                                            img_transform=lambda img: np.mean(img, axis=-3), # v2.Compose([v2.Lambda(lambda img:
-#                                           #                        torch.tensor(img, dtype=torch.float32))]),
-#                                                       # v2.Normalize(mean=len(channel)*[0.5],
-#                                                       #              std=len(channel)*[0.5])]),
-#                                            label_transform=None# lambda label: torch.tensor(label, dtype=torch.long)
-#                                            )
-# # import skimage.measure
-# # entropy = skimage.measure.shannon_entropy(dataset_real[2][0])
-
-# # dict1 = {k: g for k,g in list(zip(*list(((metadata
-# #  .select(pl.col(["moa", "moa_id", "Metadata_InChIKey"]))
-# #  .unique()
-# #  .sort(by=["moa_id","Metadata_InChIKey"])
-# #  .group_by("moa_id", maintain_order=True)
-# #  .agg(pl.col(["moa", "Metadata_InChIKey"]).unique(maintain_order=True))
-# #  .select(pl.col("moa_id", "Metadata_InChIKey")))
-# #  .to_dict(as_series=False)
-# #  .values()))))}
-
-# # imgs_zarr = zarr.open(imgs_real_path)
-
-# # dict2 = {k: g for k, g in
-# #  starmap(lambda k, g: (k, list(map(lambda x: x[1], g))),
-# #         groupby(sorted(list(set(list(zip(imgs_zarr["labels"][:], imgs_zarr["groups"][:])))),
-# #                             key=lambda x:(x[0], x[1])),
-# #                      key=lambda x:(x[0])))}
+img_filt = img_filt.astype(np.float32)
+#### Store dataset
+store = zarr.DirectoryStore(Path("image_active_256_crop_nofilt_dataset/imgs_labels_groups.zarr"))
+root = zarr.group(store=store)
+# Save datasets into the group
+root.create_dataset('imgs', data=img_filt, overwrite=True, chunks=(1, 1, *img_filt.shape[2:]))
+# root.create_dataset('imgs_contrast', data=img_filt_contrast, overwrite=True, chunks=(1, 1, *img_filt_contrast.shape[2:]))
+root.create_dataset('labels', data=labels_filt, overwrite=True, chunks=1)
+root.create_dataset('groups', data=groups_filt, dtype=object, object_codec=numcodecs.JSON(), overwrite=True, chunks=1)
