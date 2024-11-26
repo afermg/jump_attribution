@@ -190,14 +190,21 @@ from parallel_training import run_train
 
 
 # # ## e) Create the pytorch dataset with respect to kfold split with train val and test set
-imgs_path = Path("image_active_256_crop_dataset/imgs_labels_groups.zarr") # Path("image_active_dataset/imgs_labels_groups.zarr")
+imgs_path = Path("image_active_crop_dataset/imgs_labels_groups.zarr") # Path("image_active_dataset/imgs_labels_groups.zarr")
 image_dataset = zarr.open(imgs_path)
-kfold_train_test = list(StratifiedGroupKFold_custom(random_state=42).split(None, image_dataset["labels"][:], image_dataset["groups"][:]))
+kfold_train_test = list(StratifiedShuffleSplit(n_splits=5, train_size=0.65, random_state=42).split(
+    np.zeros(len(image_dataset["groups"])), y=image_dataset["groups"]))
 kfold_train_val_test = list(starmap(lambda train, val_test: [train,
                                                              *list(starmap(lambda val, test: (val_test[val], val_test[test]),
                                                                            StratifiedShuffleSplit(n_splits=1, random_state=42, test_size=0.5).split(
-                                                                               np.zeros(len(val_test)), image_dataset["labels"].oindex[val_test])))[0]],
+                                                                               np.zeros(len(val_test)), image_dataset["groups"].oindex[val_test])))[0]],
                                     kfold_train_test))
+# kfold_train_test = list(StratifiedGroupKFold_custom(random_state=42).split(None, image_dataset["labels"][:], image_dataset["groups"][:]))
+# kfold_train_val_test = list(starmap(lambda train, val_test: [train,
+#                                                              *list(starmap(lambda val, test: (val_test[val], val_test[test]),
+#                                                                            StratifiedShuffleSplit(n_splits=1, random_state=42, test_size=0.5).split(
+#                                                                                np.zeros(len(val_test)), image_dataset["labels"].oindex[val_test])))[0]],
+#                                     kfold_train_test))
 # ## #i) Transformation applied to train split
 img_transform_train = v2.RandomApply([v2.RandomVerticalFlip(p=0.5),
                                       v2.RandomChoice([v2.Lambda(lambda img: v2.functional.rotate(img, angle=0)),
@@ -207,18 +214,19 @@ img_transform_train = v2.RandomApply([v2.RandomVerticalFlip(p=0.5),
                                      p=1)
 
 fold_L = np.arange(5)
-channel = ["AGP","DNA", "ER", "Mito", "RNA"]
+channel = ["AGP","DNA", "ER"]#, "Mito", "RNA"]
 channel.sort()
 map_channel = {ch: i for i, ch in enumerate(["AGP", "DNA", "ER", "Mito", "RNA"])}
 id_channel = np.array([map_channel[ch] for ch in channel])
 
-def create_dataset_fold(Dataset,
+def create_dataset_fold(dataset_func,
                         imgs_path,
                         id_channel,
                         kfold_train_val_test,
                         img_transform_train,
-                        img_key="imgs"):
-    return {i: {"train": Dataset(imgs_path,
+                        img_key="imgs",
+                        lbl_key="labels"):
+    return {i: {"train": dataset_func(imgs_path,
                                  channel=id_channel,
                                  fold_idx=kfold_train_val_test[i][0],
                                  img_transform=v2.Compose([v2.Lambda(lambda img:
@@ -227,9 +235,10 @@ def create_dataset_fold(Dataset,
                                                            v2.Normalize(mean=len(channel)*[0.5],
                                                                         std=len(channel)*[0.5])]),
                                  label_transform=lambda label: torch.tensor(label, dtype=torch.long), # lambda label: torch.tensor(np.where(label == class_1, 0, 1), dtype=torch.long),
+                                 img_key=img_key,
+                                 lbl_key=lbl_key),
 
-                                 img_key=img_key),
-                "val": Dataset(imgs_path,
+                "val": dataset_func(imgs_path,
                                channel=id_channel,
                                fold_idx=kfold_train_val_test[i][1],
                                img_transform=v2.Compose([v2.Lambda(lambda img:
@@ -237,8 +246,10 @@ def create_dataset_fold(Dataset,
                                                         v2.Normalize(mean=len(channel)*[0.5],
                                                                      std=len(channel)*[0.5])]),
                                label_transform=lambda label: torch.tensor(label, dtype=torch.long),
-                               img_key=img_key),
-                "test": Dataset(imgs_path,
+                               img_key=img_key,
+                               lbl_key=lbl_key),
+
+                "test": dataset_func(imgs_path,
                                 channel=id_channel,
                                 fold_idx=kfold_train_val_test[i][2],
                                 img_transform=v2.Compose([v2.Lambda(lambda img:
@@ -246,7 +257,8 @@ def create_dataset_fold(Dataset,
                                                           v2.Normalize(mean=len(channel)*[0.5],
                                                                        std=len(channel)*[0.5])]),
                                 label_transform=lambda label: torch.tensor(label, dtype=torch.long),
-                                img_key=img_key)}
+                                img_key=img_key,
+                                lbl_key=lbl_key)}
             for i in fold_L}
 
 # class_1 = 1
@@ -258,9 +270,9 @@ def create_dataset_fold(Dataset,
 
 
 dataset_fold = create_dataset_fold(custom_dataset.ImageDataset, imgs_path, id_channel, kfold_train_val_test,
-                                   img_transform_train, img_key="imgs")
+                                   img_transform_train, img_key="imgs", lbl_key="groups")
 dataset_fold_ref = create_dataset_fold(custom_dataset.ImageDataset_Ref, imgs_path, id_channel, kfold_train_val_test,
-                                       img_transform_train, img_key="imgs")
+                                       img_transform_train, img_key="imgs", lbl_key="groups")
 # ### I) Memory usage per fold
 
 # def fold_memory_usage(fold:int, split:str ="train", batch_size:int=None):
@@ -378,10 +390,10 @@ classifier Training
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 # os.environ["NCCL_P2P_DISABLE"] = "1"
 # # Lightning Training
-fold = 4
-tb_logger = pl_loggers.TensorBoardLogger(save_dir=Path("logs"), name="VGG_image_256_crop_active")#"VGG_image_active")
+fold = 1
+tb_logger = pl_loggers.TensorBoardLogger(save_dir=Path("logs"), name="VGG_image_crop_active_groups")#"VGG_image_active")
 checkpoint_callback = ModelCheckpoint(dirpath=Path("lightning_checkpoint_log"),
-                                      filename=f"VGG_image_256_crop_active_fold_{fold}"+"{epoch}-{train_acc:.2f}-{val_acc:.2f}", # f"VGG_image_active_fold_{fold}"+"{epoch}-{train_acc:.2f}-{val_acc:.2f}"
+                                      filename=f"VGG_image_crop_active_groups_fold_{fold}"+"{epoch}-{train_acc:.2f}-{val_acc:.2f}", # f"VGG_image_active_fold_{fold}"+"{epoch}-{train_acc:.2f}-{val_acc:.2f}"
                                       save_top_k=1,
                                       monitor="val_acc",
                                       mode="max",
@@ -390,19 +402,19 @@ checkpoint_callback = ModelCheckpoint(dirpath=Path("lightning_checkpoint_log"),
 torch.set_float32_matmul_precision('medium') #try 'high')
 seed_everything(42, workers=True)
 
-lab_dim = 4
+lab_dim = 10
 max_epoch = 80
 lit_model = LightningModelV2(conv_model.VGG_ch,
                              model_param=(len(channel), #img_depth
-                                          256, #448, #img_size
+                                          128, #448, #img_size
                                           lab_dim, #4, #lab_dim
                                           64, #16, #conv_n_ch 32
-                                          6,#7, #n_conv_block 6
-                                          [2, 2, 3, 3, 3, 3], # [1, 1, 2, 2, 3, 3, 3], #n_conv_list
+                                          5,#7, #n_conv_block 6
+                                          [2, 2, 3, 3, 3], # [1, 1, 2, 2, 3, 3, 3], #n_conv_list
                                           3,#3, #n_lin_block
                                           0.2, #p_dropout
                                           512),#None, #max_ch
-                             lr=5e-4, #5e-4
+                             lr=1e-3, #5e-4
                              weight_decay=0, #0
                              max_epoch=max_epoch,
                              n_class=lab_dim)
@@ -429,9 +441,62 @@ trainer.fit(lit_model, DataLoader(dataset_fold[fold]["train"], batch_size=batch_
             DataLoader(dataset_fold[fold]["val"], batch_size=batch_size, num_workers=1, persistent_workers=True))
 
 
-'''
-GANs Training
-'''
+"""
+# Generate Embedding #####################################################################
+"""
+def slice_sequence_module(model, slice_id, **kwargs):
+    return (
+        nn.Sequential(*list(model.sequence.children())[:slice_id]),
+        nn.Sequential(*list(model.sequence.children())[slice_id:])
+    )
+
+model = conv_model.VGG_ch
+model_path = "VGG_image_crop_active_groups_fold_1epoch=77-train_acc=0.86-val_acc=0.77.ckpt"
+lightning_log_path = Path("lightning_checkpoint_log")
+extract_emb_layer = slice_sequence_module
+extract_emb_layer_param = {"slice_id": 6}
+lightning_module = LightningModelV2
+dataset = custom_dataset.ImageDataset(
+    imgs_path,
+    channel=id_channel,
+    fold_idx=None,
+    img_transform=v2.Compose([v2.Lambda(lambda img:
+                                        torch.tensor(img, dtype=torch.float32)),
+                              v2.Normalize(mean=len(channel)*[0.5],
+                                           std=len(channel)*[0.5])]),
+    label_transform=lambda label: torch.tensor(label, dtype=torch.long),
+    img_key="imgs",
+    lbl_key="groups"
+)
+batch_size = 256
+
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+trained_model = lightning_module.load_from_checkpoint(
+    checkpoint_path=lightning_log_path / model_path,
+    model=model).model.eval()
+embedding_model, embedding_to_logits_model = tuple(map(lambda model: model.to(device), extract_emb_layer(trained_model,
+                                                                                                         **extract_emb_layer_param)))
+dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
+embedding_stack, y_hat_stack = [], []
+with torch.no_grad():
+    for X, y in tqdm(dataloader, desc="batch"):
+        X, y = X.to(device), y.to(device)
+        embedding = embedding_model(X)
+        logits = embedding_to_logits_model(embedding)
+        y_hat = torch.argmax(nn.Softmax(dim=1)(logits), dim=1)
+        embedding_stack.append(embedding.cpu().numpy())
+        y_hat_stack.append(y_hat.cpu().numpy())
+test = (
+    pl.DataFrame(
+        np.hstack([np.hstack(y_hat_stack)[:, None], np.vstack(embedding_stack)])
+    )
+    .with_columns(pl.col("column_0").cast(pl.Int8))
+    .rename({"column_0": "pred"})
+    )
+
+"""
+# GANs Training #####################################################################
+"""
 
 
 # # os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
