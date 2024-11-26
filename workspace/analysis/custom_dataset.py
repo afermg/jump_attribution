@@ -6,24 +6,25 @@ from itertools import groupby
 from typing import Optional
 
 class ImageDataset(Dataset):
-    def __init__(self, imgs_path, channel, fold_idx, img_transform=None, label_transform=None, img_key="imgs"):
+    def __init__(self, imgs_path, channel, fold_idx, img_transform=None, label_transform=None, img_key="imgs", lbl_key="labels"):
         super().__init__()
         self.imgs_zarr = zarr.open(imgs_path)
         self.imgs_path = imgs_path
         self.channel = channel
+        self.img_key = img_key
+        self.lbl_key = lbl_key
         self.fold_idx = fold_idx
         if self.fold_idx is None:
-            self.fold_idx = list(range(len(self.imgs_zarr["labels"])))
+            self.fold_idx = list(range(len(self.imgs_zarr[self.lbl_key])))
         self.img_transform = img_transform
         self.label_transform = label_transform
-        self.img_key = img_key
 
     def __len__(self):
         return len(self.fold_idx)
 
     def __getitem__(self, idx):
         imgs = self.imgs_zarr[self.img_key].oindex[self.fold_idx[idx], self.channel]
-        labels = self.imgs_zarr["labels"].oindex[self.fold_idx[idx]]
+        labels = self.imgs_zarr[self.lbl_key].oindex[self.fold_idx[idx]]
         if self.img_transform is not None:
             imgs = self.img_transform(imgs)
         if self.label_transform is not None:
@@ -57,21 +58,22 @@ class ImageDataset_all_info(Dataset):
         return imgs, labels, groups, indices
 
 class ImageDataset_Ref(Dataset):
-    def __init__(self, imgs_path, channel, fold_idx, img_transform=None, label_transform=None, seed=42, img_key="imgs"):
+    def __init__(self, imgs_path, channel, fold_idx, img_transform=None, label_transform=None, seed=42, img_key="imgs", lbl_key="labels"):
         super().__init__()
         self.imgs_zarr = zarr.open(imgs_path)
         self.imgs_path = imgs_path
         self.channel = channel
+        self.img_key = img_key
+        self.lbl_key = lbl_key
         self.fold_idx = fold_idx
         if self.fold_idx is None:
-            self.fold_idx = list(range(len(self.imgs_zarr["labels"])))
+            self.fold_idx = list(range(len(self.imgs_zarr[self.lbl_key])))
         self.imgs_idx, self.imgs2_idx = self._make_dataset(seed)
         self.img_transform = img_transform
         self.label_transform = label_transform
-        self.img_key = img_key
 
     def _make_dataset(self, seed):
-        labels = self.imgs_zarr["labels"].oindex[self.fold_idx]
+        labels = self.imgs_zarr[self.lbl_key].oindex[self.fold_idx]
         domain_idx = sorted(zip(self.fold_idx, labels), key=lambda x: x[1])
         domain_idx = {k: np.array(list(zip(*g))[0]) for k, g in groupby(domain_idx,  key=lambda x:x[1])}
         rng = np.random.default_rng(seed)
@@ -86,7 +88,7 @@ class ImageDataset_Ref(Dataset):
     def __getitem__(self, idx):
         imgs = self.imgs_zarr[self.img_key].oindex[self.imgs_idx[idx], self.channel]
         imgs2 = self.imgs_zarr[self.img_key].oindex[self.imgs2_idx[idx], self.channel]
-        labels = self.imgs_zarr["labels"].oindex[self.imgs_idx[idx]]
+        labels = self.imgs_zarr[self.lbl_key].oindex[self.imgs_idx[idx]]
         if self.img_transform is not None:
             imgs = self.img_transform(imgs)
             imgs2 = self.img_transform(imgs2)
