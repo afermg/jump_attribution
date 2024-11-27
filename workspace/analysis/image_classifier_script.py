@@ -190,7 +190,9 @@ from parallel_training import run_train
 
 
 # # ## e) Create the pytorch dataset with respect to kfold split with train val and test set
-imgs_path = Path("image_active_crop_dataset/imgs_labels_groups.zarr") # Path("image_active_dataset/imgs_labels_groups.zarr")
+imgs_folder = Path("image_active_crop_dataset") # Path("image_active_dataset")
+imgs_file = Path("imgs_labels_groups.zarr")
+imgs_path = imgs_folder / imgs_file
 image_dataset = zarr.open(imgs_path)
 kfold_train_test = list(StratifiedShuffleSplit(n_splits=5, train_size=0.65, random_state=42).split(
     np.zeros(len(image_dataset["groups"])), y=image_dataset["groups"]))
@@ -440,7 +442,6 @@ batch_size = 256 #128
 trainer.fit(lit_model, DataLoader(dataset_fold[fold]["train"], batch_size=batch_size, num_workers=1, shuffle=True, persistent_workers=True),
             DataLoader(dataset_fold[fold]["val"], batch_size=batch_size, num_workers=1, persistent_workers=True))
 
-
 """
 # Generate Embedding #####################################################################
 """
@@ -449,51 +450,68 @@ def slice_sequence_module(model, slice_id, **kwargs):
         nn.Sequential(*list(model.sequence.children())[:slice_id]),
         nn.Sequential(*list(model.sequence.children())[slice_id:])
     )
+def compute_embedding(
+        model=conv_model.VGG_ch,
+        model_path="VGG_image_crop_active_groups_fold_1epoch=77-train_acc=0.86-val_acc=0.77.ckpt",
+        lightning_log_path = Path("lightning_checkpoint_log"),
+        extract_emb_layer = slice_sequence_module,
+        extract_emb_layer_param = {"slice_id": 6},
+        lightning_module = LightningModelV2,
+        dataset_args={"imgs_path": Path("image_active_crop_dataset/imgs_labels_groups.zarr"),
+                      "channel": np.arange(5),
+                      "fold_idx": None,
+                      "img_key": "imgs",
+                      "lbl_key": "groups"},
+        batch_size=256):
 
-model = conv_model.VGG_ch
-model_path = "VGG_image_crop_active_groups_fold_1epoch=77-train_acc=0.86-val_acc=0.77.ckpt"
-lightning_log_path = Path("lightning_checkpoint_log")
-extract_emb_layer = slice_sequence_module
-extract_emb_layer_param = {"slice_id": 6}
-lightning_module = LightningModelV2
-dataset = custom_dataset.ImageDataset(
-    imgs_path,
-    channel=id_channel,
-    fold_idx=None,
-    img_transform=v2.Compose([v2.Lambda(lambda img:
-                                        torch.tensor(img, dtype=torch.float32)),
-                              v2.Normalize(mean=len(channel)*[0.5],
-                                           std=len(channel)*[0.5])]),
-    label_transform=lambda label: torch.tensor(label, dtype=torch.long),
-    img_key="imgs",
-    lbl_key="groups"
-)
-batch_size = 256
+    dataset = custom_dataset.ImageDataset(
+        img_transform=v2.Compose([v2.Lambda(lambda img:
+                                            torch.tensor(img, dtype=torch.float32)),
+                                  v2.Normalize(mean=len(channel)*[0.5],
+                                               std=len(channel)*[0.5])]),
+        label_transform=lambda label: torch.tensor(label, dtype=torch.long),
+        **dataset_args
 
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-trained_model = lightning_module.load_from_checkpoint(
-    checkpoint_path=lightning_log_path / model_path,
-    model=model).model.eval()
-embedding_model, embedding_to_logits_model = tuple(map(lambda model: model.to(device), extract_emb_layer(trained_model,
-                                                                                                         **extract_emb_layer_param)))
-dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
-embedding_stack, y_hat_stack = [], []
-with torch.no_grad():
-    for X, y in tqdm(dataloader, desc="batch"):
-        X, y = X.to(device), y.to(device)
-        embedding = embedding_model(X)
-        logits = embedding_to_logits_model(embedding)
-        y_hat = torch.argmax(nn.Softmax(dim=1)(logits), dim=1)
-        embedding_stack.append(embedding.cpu().numpy())
-        y_hat_stack.append(y_hat.cpu().numpy())
-test = (
-    pl.DataFrame(
-        np.hstack([np.hstack(y_hat_stack)[:, None], np.vstack(embedding_stack)])
     )
-    .with_columns(pl.col("column_0").cast(pl.Int8))
-    .rename({"column_0": "pred"})
-    )
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    trained_model = lightning_module.load_from_checkpoint(
+        checkpoint_path=lightning_log_path / model_path,
+        model=model).model.eval()
+    embedding_model, embedding_to_logits_model = tuple(map(lambda model: model.to(device), extract_emb_layer(trained_model,
+                                                                                                             **extract_emb_layer_param)))
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
+    embedding_stack, y_hat_stack = [], []
+    with torch.no_grad():
+        for X, y in tqdm(dataloader, desc="batch"):
+            X, y = X.to(device), y.to(device)
+            embedding = embedding_model(X)
+            logits = embedding_to_logits_model(embedding)
+            y_hat = torch.argmax(nn.Softmax(dim=1)(logits), dim=1)
+            embedding_stack.append(embedding.cpu().numpy())
+            y_hat_stack.append(y_hat.cpu().numpy())
+    embedding_df = (
+        pl.DataFrame(
+            np.hstack([np.hstack(y_hat_stack)[:, None], np.vstack(embedding_stack)])
+        )
+        .with_columns(pl.col("column_0").cast(pl.Int8))
+        .rename({"column_0": "pred"})
+        )
+    embedding_df.write_csv(imgs_folder / ("embedding_" + model_path[:-4] + "csv"))
 
+compute_embedding(
+    model=conv_model.VGG_ch,
+    model_path="VGG_image_crop_active_groups_fold_1epoch=77-train_acc=0.86-val_acc=0.77.ckpt",
+    lightning_log_path=Path("lightning_checkpoint_log"),
+    extract_emb_layer=slice_sequence_module,
+    extract_emb_layer_param={"slice_id": 6},
+    lightning_module=LightningModelV2,
+    dataset_args={
+        "imgs_path": imgs_path,
+        "channel": id_channel,
+        "fold_idx": None,
+        "img_key": "imgs",
+        "lbl_key": "groups"},
+    batch_size=256)
 """
 # GANs Training #####################################################################
 """
