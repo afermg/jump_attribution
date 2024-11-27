@@ -22,9 +22,8 @@ from matplotlib import colors
 from skimage.feature import (  # blob_dog is a faster approximation of blob_log
     blob_dog, blob_log)
 from skimage.filters import threshold_otsu
-from skimage.util import img_as_float64, img_as_ubyte
+from skimage.util import img_as_float32, img_as_ubyte
 from skimage.util.shape import view_as_windows
-
 
 fig_directory = Path("/home/hhakem/projects/counterfactuals_projects/workspace/analysis/figures")
 
@@ -482,8 +481,11 @@ img_stack_window_norm = clip_norm_img(img_stack_window, clip=(1, 99), axis=(1, 2
 
 
 img_flat_crop = img_stack_window_norm.reshape(-1, *img_stack_window_norm.shape[-3:])
-labels_flat_crop = np.repeat(labels, len(img_flat_crop) // len(labels))
-groups_flat_crop = np.repeat(groups, len(img_flat_crop) // len(labels))
+labels_flat_crop = np.repeat(labels, num_crop**2)
+groups_flat_crop = np.repeat(groups, num_crop**2)
+iterable_flat_crop = list(
+    map(lambda tup: (*tup[0], tup[1]), zip(
+    [t for tup in iterable_stack for t in (num_crop**2 * [tup])], np.tile(np.arange(num_crop**2), len(labels)))))
 
 # plot rgb image
 plot_img(img_flat_crop, labels_flat_crop, channel=channel, size=12,
@@ -576,6 +578,8 @@ filter_mask = get_mask_thr(blob_otsu_dna_area, labels_flat_crop, num_bin=2)
 img_filt = img_flat_crop[filter_mask]
 labels_filt = labels_flat_crop[filter_mask]
 groups_filt = groups_flat_crop[filter_mask]
+metadata_filt = [it for i, it in enumerate(iterable_flat_crop) if filter_mask[i]]
+
 
 plot_img(img_filt, labels_filt, channel=channel, size=12,
          fig_name="multiple_cells_crop_norm_big_img_filt",
@@ -590,7 +594,7 @@ clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=tile_grid_size)
 
 with ThreadPool(cpu_count()) as thread:
     img_filt_contrast = np.stack(list(
-        thread.map(lambda img: np.stack(list(map(lambda img_ch: img_as_float64(clahe.apply(img_as_ubyte(img_ch))), img))),
+        thread.map(lambda img: np.stack(list(map(lambda img_ch: img_as_float32(clahe.apply(img_as_ubyte(img_ch))), img))),
                    img_filt)))
 
 plot_img(img_filt_contrast, labels_filt, channel=channel, size=12,
@@ -604,7 +608,11 @@ store = zarr.DirectoryStore(Path("image_active_crop_dataset/imgs_labels_groups.z
 root = zarr.group(store=store)
 # Save datasets into the group
 root.create_dataset('imgs', data=img_filt, overwrite=True, chunks=(1, 1, *img_filt.shape[2:]))
-# root.create_dataset('imgs_contrast', data=img_filt_contrast, overwrite=True, chunks=(1, 1, *img_filt_contrast.shape[2:]))
+root.create_dataset('imgs_contrast', data=img_filt_contrast, overwrite=True, chunks=(1, 1, *img_filt_contrast.shape[2:]))
 root.create_dataset('labels', data=labels_filt, overwrite=True, chunks=1)
 root.create_dataset('groups', data=groups_filt, # dtype=object, object_codec=numcodecs.JSON(), ### This encoding was for string inchi
                     overwrite=True, chunks=1)
+#### Store metadata
+metadata_filt_df = pl.DataFrame(metadata_filt, schema=["Metadata_Source", "Metadata_Batch", "Metadata_Plate", "Metadata_Well", "site", "crop_id"])
+metadata_filt_df = metadata_filt_df.with_row_count("img_index")
+metadata_filt_df.write_csv(Path("image_active_crop_dataset/metadata.csv"))
