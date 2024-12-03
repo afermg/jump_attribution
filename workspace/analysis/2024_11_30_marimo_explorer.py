@@ -16,7 +16,8 @@ def __():
     import polars as pl
 
 
-    df = pl.read_parquet("/datastore/shared/attribution/data/main_data.parquet")
+    # df = pl.read_parquet("/datastore/shared/attribution/data/main_data.parquet")
+    df = pl.read_parquet("/home/hhakem/projects/counterfactuals_projects/workspace/analysis/image_active_crop_dataset/embedding_UMAP.parquet")
     return Path, df, numpy, pl
 
 
@@ -30,7 +31,7 @@ def __(Path):
     def load_image(image_id: int, channel: int):
         zarr_path = Path("/home/hhakem/projects/counterfactuals_projects/workspace/analysis/image_active_crop_dataset/imgs_labels_groups.zarr")
         with zarr.open(zarr_path) as imgs:
-            return imgs["imgs"][image_id, channel]
+            return imgs["imgs"].oindex[image_id, channel]
     return cache, load_image, zarr
 
 
@@ -41,8 +42,8 @@ def __(alt):
             alt.Chart(df)
             .mark_circle()
             .encode(
-                x=alt.X("PC1:Q"),#.scale(domain=(-2.5, 2.5)),
-                y=alt.Y("PC2:Q"),#.scale(domain=(-2.5, 2.5)),
+                x=alt.X("UMAP1:Q"),#"PC1:Q"),#.scale(domain=(-2.5, 2.5)),
+                y=alt.Y("UMAP2:Q"),#"PC2:Q"),#.scale(domain=(-2.5, 2.5)),
                 color=alt.Color("Metadata_Batch:N"),
                 # shape=alt.Shape("Compound:N")
             )
