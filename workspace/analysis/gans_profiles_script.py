@@ -9,43 +9,28 @@
 
 
 
-import matplotlib.pyplot as plt
-import seaborn as sns
-import polars as pl
 import pandas as pd
 
 import numpy as np
-import cupy as cp
 
-from tqdm import tqdm
 
-from sklearn.preprocessing import LabelEncoder, StandardScaler, MinMaxScaler, RobustScaler
-from sklearn.pipeline import Pipeline
-from sklearn.metrics import roc_auc_score, f1_score, accuracy_score, confusion_matrix
-from xgboost import XGBClassifier
+from sklearn.preprocessing import RobustScaler
 
-from Data_filtering.features_engineering import features_drop_corr
-from Data_filtering.features_engineering import features_drop_corr_gpu
 
 from data_split import StratifiedGroupKFold_custom
 
 import torch
-import torch.nn as nn 
-from torch.utils.data import Dataset, DataLoader
-from torch.optim import Adam
-from torch.nn import CrossEntropyLoss
+from torch.utils.data import DataLoader
 
 import lightning as L
-from lightning_parallel_training import LightningModelV2, LightningGAN
+from lightning_parallel_training import LightningModelV2
 
-from lightning.pytorch import Trainer, seed_everything
+from lightning.pytorch import seed_everything
 from lightning.pytorch import loggers as pl_loggers
 from lightning.pytorch.callbacks import ModelCheckpoint
 import conv_model
 
 import custom_dataset
-import captum.attr
-from captum.attr import IntegratedGradients
 
 from pathlib import Path
 import resource
@@ -263,3 +248,4 @@ trainer.fit(lit_model, DataLoader(dataset_fold[fold]["train"], batch_size=batch_
 # plt.close(fig)
 
 # print(accuracy_score(target_labels, predictions))
+"""
