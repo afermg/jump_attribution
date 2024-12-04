@@ -120,7 +120,7 @@ class ImageDataset_fake(Dataset):
         if len(indices.shape) == 0 :
             imgs = self.imgs_zarr["imgs"].oindex[true_idx, img_rank]
         else:
-            imgs = np.stack(list(map(lambda x: self.imgs_zarr["imgs"][*x], zip(true_idx, img_rank))))
+            imgs = np.stack(self.imgs_zarr["imgs"][x, y] for x,y in zip(true_idx, img_rank))
         labels = self.imgs_zarr["labels"].oindex[true_idx]
         if self.img_transform is not None:
             imgs = self.img_transform(imgs)
