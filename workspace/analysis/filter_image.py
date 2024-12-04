@@ -11,16 +11,14 @@ import cv2
 import matplotlib.colors as mcolors
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
-import numcodecs
 import numpy as np
 import polars as pl
 import seaborn as sns
 import zarr
 from jump_portrait.fetch import get_jump_image
 from jump_portrait.utils import batch_processing, parallel
-from matplotlib import colors
 from skimage.feature import (  # blob_dog is a faster approximation of blob_log
-    blob_dog, blob_log)
+    blob_dog)
 from skimage.filters import threshold_otsu
 from skimage.util import img_as_float32, img_as_ubyte
 from skimage.util.shape import view_as_windows

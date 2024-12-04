@@ -1,22 +1,19 @@
 import lightning as L
 
-import numpy as np
 import matplotlib.pyplot as plt
 from more_itertools import unzip
 import torch
-import torch.nn.functional as F
 import torch.nn as nn
 import torch.optim as optim
-import torchvision
 
 from munch import Munch #Munch is a dictionary that supports attribute-style access, a la JavaScript
 
-from torch.nn.functional import cross_entropy, l1_loss, binary_cross_entropy_with_logits, sigmoid
+from torch.nn.functional import cross_entropy, l1_loss, binary_cross_entropy_with_logits
 
 
 ## WORK WITH TORCH METRIC FROM LIGHTNING INSTEAD
 from torchmetrics.classification import (
-    MulticlassAUROC, MulticlassAccuracy, MulticlassF1Score, MulticlassConfusionMatrix, BinaryAccuracy)
+    MulticlassAUROC, MulticlassAccuracy, MulticlassF1Score, MulticlassConfusionMatrix)
 
 
 

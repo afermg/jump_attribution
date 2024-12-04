@@ -1,6 +1,5 @@
 import seaborn as sns
 import matplotlib.pyplot as plt
-import matplotlib
 import numpy as np
 import polars as pl
 

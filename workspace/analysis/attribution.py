@@ -1,10 +1,9 @@
 #!/usr/bin/env python
 # coding: utf-8
-from functools import partial, reduce
+from functools import partial
 from itertools import starmap
 
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
-import time
 
 from pathlib import Path
 import warnings
@@ -36,10 +35,9 @@ from captum.attr._utils.common import (
 )
 from torch import Tensor
 
-from multiprocessing import Pool, cpu_count
+from multiprocessing import cpu_count
 from multiprocessing.pool import ThreadPool
 
-import pandas as pd
 import polars as pl
 import seaborn as sns
 from tqdm import tqdm
@@ -1761,7 +1759,6 @@ def plot_dac_curve_per_transition(mask_dac_df, accuracy_df, real_baseline=True, 
 
 import conv_model
 import custom_dataset
-import torch.nn.functional as F
 from lightning_parallel_training import LightningModelV2
 from torch.utils.data import DataLoader
 from torchvision.transforms import v2

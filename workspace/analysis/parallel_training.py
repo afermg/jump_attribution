@@ -12,10 +12,8 @@ from torch.nn.functional import cross_entropy
 from torcheval.metrics.functional import (
 multiclass_accuracy, multiclass_auroc, multiclass_f1_score, multiclass_confusion_matrix)
 from tqdm import tqdm
-import os
 #os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
-from torch.nn.parallel import DistributedDataParallel as DDP
 
 def setup(rank, world_size):
     os.environ['MASTER_ADDR'] = 'localhost'

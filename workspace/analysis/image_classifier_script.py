@@ -1,54 +1,27 @@
 #!/usr/bin/env python
 # coding: utf-8
-import itertools
 import os
 import resource
-from collections.abc import Callable, Iterable
-from itertools import groupby, product, starmap
+from itertools import starmap
 from pathlib import Path
-from typing import List
 
 import lightning as L
-import matplotlib.patches as mpatches
-import matplotlib.pyplot as plt
-import numcodecs
 import numpy as np
-import pandas as pd
 import polars as pl
-import seaborn as sns
 import torch
-import torch.distributed as dist
-import torch.multiprocessing as mp
 import torch.nn as nn
-import xarray as xr
 import zarr
-from jump_portrait.fetch import get_jump_image
-from jump_portrait.utils import batch_processing, parallel
-from lightning.pytorch import Trainer
 from lightning.pytorch import loggers as pl_loggers
 from lightning.pytorch import seed_everything
 from lightning.pytorch.callbacks import ModelCheckpoint
-from lightning.pytorch.utilities.combined_loader import CombinedLoader
-from more_itertools import unzip
-from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import StratifiedShuffleSplit
-from sklearn.preprocessing import LabelEncoder
-from torch.nn import CrossEntropyLoss
-from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.optim import Adam
-from torch.utils.data import BatchSampler, DataLoader, Dataset
-from torchmetrics.image.fid import FrechetInceptionDistance
-from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
+from torch.utils.data import DataLoader
 from torchvision.transforms import v2
 from tqdm import tqdm
-from tqdm.notebook import tqdm as tqdm_notebook
 
 import conv_model
 import custom_dataset
-from data_split import StratifiedGroupKFold_custom
-from lightning_parallel_training import (LightningGANV2, LightningModelV2,
-                                         LightningStarGANV2)
-from parallel_training import run_train
+from lightning_parallel_training import (LightningModelV2)
 
 # # 1) Loading images and create a pytorch dataset
 
