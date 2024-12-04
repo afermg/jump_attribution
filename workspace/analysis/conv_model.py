@@ -1,9 +1,9 @@
-import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
 import numpy as np
 from typing import Literal, Optional, Tuple
+import torch
 
 class VGG(nn.Module):
     def __init__(self, img_depth, img_size, lab_dim, n_conv_block, n_conv_list, n_lin_block):
