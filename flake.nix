@@ -21,7 +21,7 @@
               config.allowUnfree = true;
               config.cudaSupport = true;
             };
- 
+
             libList = [
                 # Add needed packages here
                 pkgs.stdenv.cc.cc
@@ -44,7 +44,7 @@
           with pkgs;
         {
           devShells = {
-              default = let 
+              default = let
                 python_with_pkgs = (mpkgs.python311.withPackages(pp: [
                   pp.ray
                   pp.torch
@@ -61,8 +61,9 @@
                       python_with_pkgs
                       python311Packages.venvShellHook
                       uv
+                      pyright
                     ]
-                    ++ libList; 
+                    ++ libList;
                     venvDir = "./.venv";
                     postVenvCreation = ''
                         unset SOURCE_DATE_EPOCH
@@ -76,6 +77,7 @@
                         runHook venvShellHook
                         uv pip sync requirements.txt
                         export PYTHONPATH=${python_with_pkgs}/${python_with_pkgs.sitePackages}:$PYTHONPATH
+                        export PATH=${pkgs.pyright}/bin:${pkgs.ruff}/bin:$PATH
                     '';
                   };
               };
